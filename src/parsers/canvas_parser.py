@@ -132,64 +132,101 @@ class CanvasParser:
     
     def _parse_module(self, module_elem: ET.Element) -> Dict:
         """Parse individual module element"""
+        # Define namespace
+        ns = {'cc': 'http://canvas.instructure.com/xsd/cccv1p0'}
+        
         module = {
             'identifier': module_elem.get('identifier'),
-            'title': self._get_text(module_elem, 'title'),
-            'workflow_state': self._get_text(module_elem, 'workflow_state'),
-            'position': int(self._get_text(module_elem, 'position', '0')),
-            'require_sequential_progress': self._get_text(module_elem, 'require_sequential_progress') == 'true',
-            'prerequisites': self._parse_prerequisites(module_elem),
-            'completion_requirements': self._parse_completion_requirements(module_elem),
+            'title': self._get_text_with_ns(module_elem, 'title', ns),
+            'workflow_state': self._get_text_with_ns(module_elem, 'workflow_state', ns),
+            'position': int(self._get_text_with_ns(module_elem, 'position', ns) or '0'),
+            'require_sequential_progress': self._get_text_with_ns(module_elem, 'require_sequential_progress', ns) == 'true',
+            'prerequisites': self._parse_prerequisites(module_elem, ns),
+            'completion_requirements': self._parse_completion_requirements(module_elem, ns),
             'items': []
         }
         
-        # Parse module items
-        items_elem = module_elem.find('items')
+        # Parse module items - try with namespace first, then without
+        items_elem = module_elem.find('cc:items', ns)
+        if items_elem is None:
+            items_elem = module_elem.find('items')
+            
         if items_elem is not None:
-            for item_elem in items_elem.findall('item'):
-                item = self._parse_module_item(item_elem)
+            # Try to find items with namespace
+            item_list = items_elem.findall('cc:item', ns)
+            if not item_list:
+                # Fallback to no namespace
+                item_list = items_elem.findall('item')
+                
+            for item_elem in item_list:
+                item = self._parse_module_item(item_elem, ns)
                 module['items'].append(item)
         
         return module
     
-    def _parse_module_item(self, item_elem: ET.Element) -> Dict:
+    def _parse_module_item(self, item_elem: ET.Element, ns: Dict = None) -> Dict:
         """Parse individual module item"""
+        if ns is None:
+            ns = {}
+            
         return {
             'identifier': item_elem.get('identifier'),
-            'content_type': self._get_text(item_elem, 'content_type'),
-            'title': self._get_text(item_elem, 'title'),
-            'identifierref': self._get_text(item_elem, 'identifierref'),
-            'workflow_state': self._get_text(item_elem, 'workflow_state'),
-            'position': int(self._get_text(item_elem, 'position', '0')),
-            'url': self._get_text(item_elem, 'url'),
+            'content_type': self._get_text_with_ns(item_elem, 'content_type', ns),
+            'title': self._get_text_with_ns(item_elem, 'title', ns),
+            'identifierref': self._get_text_with_ns(item_elem, 'identifierref', ns),
+            'workflow_state': self._get_text_with_ns(item_elem, 'workflow_state', ns),
+            'position': int(self._get_text_with_ns(item_elem, 'position', ns) or '0'),
+            'url': self._get_text_with_ns(item_elem, 'url', ns),
         }
     
-    def _parse_prerequisites(self, module_elem: ET.Element) -> List[Dict]:
+    def _parse_prerequisites(self, module_elem: ET.Element, ns: Dict = None) -> List[Dict]:
         """Parse module prerequisites"""
+        if ns is None:
+            ns = {}
+            
         prereqs = []
-        prereq_elem = module_elem.find('prerequisites')
+        # Try with namespace first
+        prereq_elem = module_elem.find('cc:prerequisites', ns) if ns else None
+        if prereq_elem is None:
+            prereq_elem = module_elem.find('prerequisites')
         
         if prereq_elem is not None:
-            for prereq in prereq_elem.findall('prerequisite'):
+            # Try to find prereq elements with namespace
+            prereq_list = prereq_elem.findall('cc:prerequisite', ns) if ns else []
+            if not prereq_list:
+                prereq_list = prereq_elem.findall('prerequisite')
+                
+            for prereq in prereq_list:
                 prereqs.append({
                     'type': prereq.get('type'),
-                    'identifierref': self._get_text(prereq, 'identifierref'),
-                    'title': self._get_text(prereq, 'title')
+                    'identifierref': self._get_text_with_ns(prereq, 'identifierref', ns),
+                    'title': self._get_text_with_ns(prereq, 'title', ns)
                 })
         
         return prereqs
     
-    def _parse_completion_requirements(self, module_elem: ET.Element) -> List[Dict]:
+    def _parse_completion_requirements(self, module_elem: ET.Element, ns: Dict = None) -> List[Dict]:
         """Parse completion requirements"""
+        if ns is None:
+            ns = {}
+            
         requirements = []
-        req_elem = module_elem.find('completionRequirements')
+        # Try with namespace first
+        req_elem = module_elem.find('cc:completionRequirements', ns) if ns else None
+        if req_elem is None:
+            req_elem = module_elem.find('completionRequirements')
         
         if req_elem is not None:
-            for req in req_elem.findall('completionRequirement'):
+            # Try to find requirement elements with namespace
+            req_list = req_elem.findall('cc:completionRequirement', ns) if ns else []
+            if not req_list:
+                req_list = req_elem.findall('completionRequirement')
+                
+            for req in req_list:
                 requirements.append({
                     'type': req.get('type'),
-                    'min_score': float(self._get_text(req, 'min_score', '0')),
-                    'identifierref': self._get_text(req, 'identifierref')
+                    'min_score': float(self._get_text_with_ns(req, 'min_score', ns) or '0'),
+                    'identifierref': self._get_text_with_ns(req, 'identifierref', ns)
                 })
         
         return requirements
@@ -239,6 +276,18 @@ class CanvasParser:
     
     def _get_text(self, elem: ET.Element, tag: str, default: str = '') -> str:
         """Safely get text from XML element"""
+        child = elem.find(tag)
+        return child.text if child is not None and child.text else default
+    
+    def _get_text_with_ns(self, elem: ET.Element, tag: str, ns: Dict, default: str = '') -> str:
+        """Safely get text from XML element with namespace support"""
+        # Try with namespace first
+        if ns and 'cc' in ns:
+            child = elem.find(f'cc:{tag}', ns)
+            if child is not None and child.text:
+                return child.text
+        
+        # Fallback to no namespace
         child = elem.find(tag)
         return child.text if child is not None and child.text else default
     
