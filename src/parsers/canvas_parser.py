@@ -1,0 +1,266 @@
+"""
+Canvas Course Parser
+
+Parses Canvas IMS Common Cartridge (IMSCC) export files.
+"""
+
+import zipfile
+import xml.etree.ElementTree as ET
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+from bs4 import BeautifulSoup
+import tempfile
+import shutil
+
+
+class CanvasParser:
+    """Parse Canvas IMSCC export files"""
+    
+    def __init__(self, verbose: bool = False):
+        self.verbose = verbose
+        self.temp_dir = None
+        self.extract_dir = None
+        
+    def parse(self, imscc_path: str) -> Dict:
+        """
+        Parse Canvas IMSCC file
+        
+        Args:
+            imscc_path: Path to .imscc file
+            
+        Returns:
+            Dictionary with course structure and content
+        """
+        imscc_path = Path(imscc_path)
+        
+        if not imscc_path.exists():
+            raise FileNotFoundError(f"IMSCC file not found: {imscc_path}")
+        
+        # Extract IMSCC (ZIP) file
+        self.temp_dir = Path(tempfile.mkdtemp(prefix="canvas_parser_"))
+        self.extract_dir = self.temp_dir / "extracted"
+        
+        if self.verbose:
+            print(f"📦 Extracting {imscc_path.name}...")
+        
+        with zipfile.ZipFile(imscc_path, 'r') as zip_ref:
+            zip_ref.extractall(self.extract_dir)
+        
+        # Parse structure
+        manifest = self._parse_manifest()
+        course_settings = self._parse_course_settings()
+        modules = self._parse_modules()
+        
+        # Build course structure
+        course_data = {
+            'title': course_settings.get('title', 'Untitled Course'),
+            'course_code': course_settings.get('course_code', ''),
+            'start_date': course_settings.get('start_at'),
+            'end_date': course_settings.get('conclude_at'),
+            'identifier': course_settings.get('identifier', ''),
+            'modules': modules,
+            'manifest': manifest,
+            'extract_dir': self.extract_dir
+        }
+        
+        return course_data
+    
+    def _parse_manifest(self) -> ET.Element:
+        """Parse imsmanifest.xml"""
+        manifest_path = self.extract_dir / "imsmanifest.xml"
+        
+        if not manifest_path.exists():
+            raise ValueError("No imsmanifest.xml found in IMSCC")
+        
+        tree = ET.parse(manifest_path)
+        return tree.getroot()
+    
+    def _parse_course_settings(self) -> Dict:
+        """Parse course_settings/course_settings.xml"""
+        settings_path = self.extract_dir / "course_settings" / "course_settings.xml"
+        
+        if not settings_path.exists():
+            return {}
+        
+        tree = ET.parse(settings_path)
+        root = tree.getroot()
+        
+        # Handle namespace
+        ns = {'cc': 'http://canvas.instructure.com/xsd/cccv1p0'}
+        
+        # Extract basic settings (try with and without namespace)
+        settings = {
+            'identifier': root.get('identifier'),
+            'title': self._get_text_ns(root, 'title', ns),
+            'course_code': self._get_text_ns(root, 'course_code', ns),
+            'start_at': self._get_text_ns(root, 'start_at', ns),
+            'conclude_at': self._get_text_ns(root, 'conclude_at', ns),
+            'license': self._get_text_ns(root, 'license', ns),
+            'is_public': self._get_text_ns(root, 'is_public', ns) == 'true'
+        }
+        
+        return settings
+    
+    def _parse_modules(self) -> List[Dict]:
+        """Parse course_settings/module_meta.xml"""
+        module_path = self.extract_dir / "course_settings" / "module_meta.xml"
+        
+        if not module_path.exists():
+            if self.verbose:
+                print("⚠️  No module_meta.xml found")
+            return []
+        
+        tree = ET.parse(module_path)
+        root = tree.getroot()
+        
+        # Handle XML namespace
+        ns = {'cc': 'http://canvas.instructure.com/xsd/cccv1p0'}
+        
+        modules = []
+        # Try with namespace first
+        for module_elem in root.findall('cc:module', ns):
+            module_data = self._parse_module(module_elem)
+            modules.append(module_data)
+        
+        # Fallback to no namespace
+        if not modules:
+            for module_elem in root.findall('.//module'):
+                module_data = self._parse_module(module_elem)
+                modules.append(module_data)
+        
+        return modules
+    
+    def _parse_module(self, module_elem: ET.Element) -> Dict:
+        """Parse individual module element"""
+        module = {
+            'identifier': module_elem.get('identifier'),
+            'title': self._get_text(module_elem, 'title'),
+            'workflow_state': self._get_text(module_elem, 'workflow_state'),
+            'position': int(self._get_text(module_elem, 'position', '0')),
+            'require_sequential_progress': self._get_text(module_elem, 'require_sequential_progress') == 'true',
+            'prerequisites': self._parse_prerequisites(module_elem),
+            'completion_requirements': self._parse_completion_requirements(module_elem),
+            'items': []
+        }
+        
+        # Parse module items
+        items_elem = module_elem.find('items')
+        if items_elem is not None:
+            for item_elem in items_elem.findall('item'):
+                item = self._parse_module_item(item_elem)
+                module['items'].append(item)
+        
+        return module
+    
+    def _parse_module_item(self, item_elem: ET.Element) -> Dict:
+        """Parse individual module item"""
+        return {
+            'identifier': item_elem.get('identifier'),
+            'content_type': self._get_text(item_elem, 'content_type'),
+            'title': self._get_text(item_elem, 'title'),
+            'identifierref': self._get_text(item_elem, 'identifierref'),
+            'workflow_state': self._get_text(item_elem, 'workflow_state'),
+            'position': int(self._get_text(item_elem, 'position', '0')),
+            'url': self._get_text(item_elem, 'url'),
+        }
+    
+    def _parse_prerequisites(self, module_elem: ET.Element) -> List[Dict]:
+        """Parse module prerequisites"""
+        prereqs = []
+        prereq_elem = module_elem.find('prerequisites')
+        
+        if prereq_elem is not None:
+            for prereq in prereq_elem.findall('prerequisite'):
+                prereqs.append({
+                    'type': prereq.get('type'),
+                    'identifierref': self._get_text(prereq, 'identifierref'),
+                    'title': self._get_text(prereq, 'title')
+                })
+        
+        return prereqs
+    
+    def _parse_completion_requirements(self, module_elem: ET.Element) -> List[Dict]:
+        """Parse completion requirements"""
+        requirements = []
+        req_elem = module_elem.find('completionRequirements')
+        
+        if req_elem is not None:
+            for req in req_elem.findall('completionRequirement'):
+                requirements.append({
+                    'type': req.get('type'),
+                    'min_score': float(self._get_text(req, 'min_score', '0')),
+                    'identifierref': self._get_text(req, 'identifierref')
+                })
+        
+        return requirements
+    
+    def get_wiki_page_content(self, identifier: str) -> Optional[str]:
+        """Get wiki page HTML content"""
+        # Try wiki_content directory
+        wiki_dir = self.extract_dir / "wiki_content"
+        
+        if wiki_dir.exists():
+            for html_file in wiki_dir.glob("*.html"):
+                # Parse to check identifier
+                with open(html_file, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    soup = BeautifulSoup(content, 'html.parser')
+                    meta = soup.find('meta', {'name': 'identifier'})
+                    
+                    if meta and meta.get('content') == identifier:
+                        # Extract body content
+                        body = soup.find('body')
+                        if body:
+                            return str(body)
+        
+        return None
+    
+    def get_assignment_settings(self, identifier: str) -> Optional[Dict]:
+        """Get assignment settings"""
+        # Look for assignment directory
+        assignment_dir = self.extract_dir / identifier
+        settings_file = assignment_dir / "assignment_settings.xml"
+        
+        if settings_file.exists():
+            tree = ET.parse(settings_file)
+            root = tree.getroot()
+            
+            return {
+                'identifier': root.get('identifier'),
+                'title': self._get_text(root, 'title'),
+                'points_possible': float(self._get_text(root, 'points_possible', '0')),
+                'grading_type': self._get_text(root, 'grading_type'),
+                'submission_types': self._get_text(root, 'submission_types'),
+                'workflow_state': self._get_text(root, 'workflow_state'),
+                'due_at': self._get_text(root, 'due_at'),
+            }
+        
+        return None
+    
+    def _get_text(self, elem: ET.Element, tag: str, default: str = '') -> str:
+        """Safely get text from XML element"""
+        child = elem.find(tag)
+        return child.text if child is not None and child.text else default
+    
+    def _get_text_ns(self, elem: ET.Element, tag: str, ns: Dict, default: str = '') -> str:
+        """Safely get text from XML element with namespace support"""
+        # Try with namespace first
+        for prefix, uri in ns.items():
+            child = elem.find(f'{{{uri}}}{tag}')
+            if child is not None and child.text:
+                return child.text
+        
+        # Fallback to no namespace
+        child = elem.find(tag)
+        return child.text if child is not None and child.text else default
+    
+    def cleanup(self):
+        """Clean up temporary files"""
+        if self.temp_dir and self.temp_dir.exists():
+            shutil.rmtree(self.temp_dir)
+    
+    def __enter__(self):
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.cleanup()
