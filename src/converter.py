@@ -9,6 +9,7 @@ from typing import Dict
 
 from .parsers.canvas_parser import CanvasParser
 from .converters.canvas_to_ir import CanvasToIRConverter
+from .converters.asset_manager import AssetManager
 from .generators.olx_generator import OLXGenerator
 from .models.intermediate_rep import CourseIR
 
@@ -54,21 +55,35 @@ class CanvasToOpenEdXConverter:
             if self.verbose:
                 print("\n🔄 Step 2: Converting to intermediate representation...")
             
+            # Initialize asset manager
+            asset_manager = AssetManager(
+                parser.extract_dir, 
+                Path(output_dir),
+                verbose=self.verbose
+            )
+            self.ir_converter.asset_manager = asset_manager
+            
             course_ir = self.ir_converter.convert(canvas_data, parser)
             
             if self.verbose:
                 print(f"   ✅ Course: {course_ir.org}/{course_ir.course}/{course_ir.run}")
                 print(f"   📚 Chapters: {len(course_ir.chapters)}")
             
-            # Step 3: Generate OLX
+            # Step 3: Copy assets
             if self.verbose:
-                print("\n📝 Step 3: Generating Open edX OLX...")
+                print("\n📁 Step 3: Copying assets...")
+            
+            asset_count = asset_manager.copy_all_assets()
+            
+            # Step 4: Generate OLX
+            if self.verbose:
+                print("\n📝 Step 4: Generating Open edX OLX...")
             
             olx_gen = OLXGenerator(output_dir, verbose=self.verbose)
             olx_gen.generate(course_ir)
             
-            # Step 4: Generate report
-            report = self._generate_report(canvas_data, course_ir, output_dir)
+            # Step 5: Generate report
+            report = self._generate_report(canvas_data, course_ir, output_dir, asset_count)
         
         if self.verbose:
             print("\n" + "=" * 60)
@@ -82,7 +97,8 @@ class CanvasToOpenEdXConverter:
         self, 
         canvas_data: Dict, 
         course_ir: CourseIR, 
-        output_dir: str
+        output_dir: str,
+        asset_count: int = 0
     ) -> Dict:
         """Generate conversion report"""
         
@@ -107,7 +123,8 @@ class CanvasToOpenEdXConverter:
                 'chapters': len(course_ir.chapters),
                 'sequentials': sum(len(c.sequentials) for c in course_ir.chapters),
                 'verticals': total_items,
-                'components': total_components
+                'components': total_components,
+                'assets': asset_count
             },
             'output_directory': output_dir
         }

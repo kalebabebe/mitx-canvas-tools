@@ -16,6 +16,7 @@ from ..models.intermediate_rep import (
 from ..utils.url_name_generator import URLNameGenerator
 from ..parsers.qti_parser import QTIParser
 from ..converters.qti_to_capa import QTIToCapaConverter
+from ..converters.asset_manager import AssetManager
 
 
 class CanvasToIRConverter:
@@ -26,6 +27,7 @@ class CanvasToIRConverter:
         self.url_gen = URLNameGenerator()
         self.qti_parser = QTIParser(verbose=verbose)
         self.capa_converter = QTIToCapaConverter(verbose=verbose)
+        self.asset_manager = None  # Set during convert()
     
     def convert(self, canvas_data: Dict, canvas_parser) -> CourseIR:
         """
@@ -232,6 +234,10 @@ class CanvasToIRConverter:
             content = ''.join(str(child) for child in body.children)
         else:
             content = html_content
+        
+        # Convert asset URLs if asset manager is available
+        if self.asset_manager:
+            content = self.asset_manager.convert_html_urls(content)
         
         # Wrap in div
         content = f'<div class="wiki-page-content">\n{content}\n</div>'
