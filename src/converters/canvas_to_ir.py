@@ -14,6 +14,8 @@ from ..models.intermediate_rep import (
     CourseIR, ChapterIR, SequentialIR, VerticalIR, ComponentIR
 )
 from ..utils.url_name_generator import URLNameGenerator
+from ..parsers.qti_parser import QTIParser
+from ..converters.qti_to_capa import QTIToCapaConverter
 
 
 class CanvasToIRConverter:
@@ -22,6 +24,8 @@ class CanvasToIRConverter:
     def __init__(self, verbose: bool = False):
         self.verbose = verbose
         self.url_gen = URLNameGenerator()
+        self.qti_parser = QTIParser(verbose=verbose)
+        self.capa_converter = QTIToCapaConverter(verbose=verbose)
     
     def convert(self, canvas_data: Dict, canvas_parser) -> CourseIR:
         """
@@ -193,15 +197,10 @@ class CanvasToIRConverter:
                 vertical.components.append(component)
         
         elif content_type == 'Quizzes::Quiz':
-            # Will be handled later - for now create placeholder
-            component = ComponentIR(
-                type='html',
-                display_name=item['title'],
-                url_name=self.url_gen.generate(f"{item['title']}_placeholder"),
-                content='<p>Quiz conversion coming soon...</p>',
-                canvas_source=item
-            )
-            vertical.components.append(component)
+            components = self._convert_quiz(item, canvas_parser)
+            if components:
+                for component in components:
+                    vertical.components.append(component)
         
         elif content_type == 'ContextExternalTool':
             # LTI tool - add to unsupported (handled by caller)
@@ -283,6 +282,53 @@ class CanvasToIRConverter:
             settings=settings,
             canvas_source=item
         )
+    
+    def _convert_quiz(
+        self,
+        item: Dict,
+        canvas_parser
+    ) -> List[ComponentIR]:
+        """Convert quiz to problem components"""
+        
+        identifier = item['identifierref']
+        
+        # Find QTI file
+        qti_path = canvas_parser.extract_dir / identifier / "assessment_qti.xml"
+        
+        if not qti_path.exists():
+            if self.verbose:
+                print(f"   ⚠️  No QTI file found for quiz: {item['title']}")
+            return []
+        
+        # Parse QTI
+        quiz_data = self.qti_parser.parse_quiz(qti_path)
+        
+        if not quiz_data or not quiz_data.get('questions'):
+            if self.verbose:
+                print(f"   ⚠️  No questions found in quiz: {item['title']}")
+            return []
+        
+        # Convert each question to a component
+        components = []
+        
+        for i, question in enumerate(quiz_data['questions'], 1):
+            # Convert to CAPA
+            capa_xml = self.capa_converter.convert_question(question)
+            
+            # Create problem component
+            component = ComponentIR(
+                type='problem',
+                display_name=question.get('title') or f"Question {i}",
+                url_name=self.url_gen.generate(f"{item['title']}_q{i}"),
+                content=capa_xml,
+                canvas_source=item
+            )
+            components.append(component)
+        
+        if self.verbose:
+            print(f"   ✅ Converted quiz '{item['title']}': {len(components)} questions")
+        
+        return components
     
     def _parse_date(self, date_str: Optional[str]) -> Optional[datetime]:
         """Parse ISO date string"""
