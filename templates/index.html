@@ -312,15 +312,16 @@
             progressSection.style.display = 'none';
             resultSection.style.display = 'block';
 
-            const stats = result.statistics;
+            const report = result.report || result;
+            const stats = report.statistics;
             resultStats.innerHTML = `
-                <strong>${result.course_title}</strong><br>
+                <strong>${report.course_title}</strong><br>
                 Chapters: ${stats.chapters}<br>
                 Components: ${stats.components}<br>
                 Assets: ${stats.assets || 0}
             `;
 
-            downloadBtn.href = '/download';
+            downloadBtn.href = result.download_url || '/download';
         }
 
         function showError(message) {
