@@ -50,6 +50,7 @@ class CanvasParser:
         manifest = self._parse_manifest()
         course_settings = self._parse_course_settings()
         modules = self._parse_modules()
+        assignment_groups = self._parse_assignment_groups()
         
         # Build course structure
         course_data = {
@@ -58,7 +59,9 @@ class CanvasParser:
             'start_date': course_settings.get('start_at'),
             'end_date': course_settings.get('conclude_at'),
             'identifier': course_settings.get('identifier', ''),
+            'group_weighting_scheme': course_settings.get('group_weighting_scheme', ''),
             'modules': modules,
+            'assignment_groups': assignment_groups,
             'manifest': manifest,
             'extract_dir': self.extract_dir
         }
@@ -96,7 +99,8 @@ class CanvasParser:
             'start_at': self._get_text_ns(root, 'start_at', ns),
             'conclude_at': self._get_text_ns(root, 'conclude_at', ns),
             'license': self._get_text_ns(root, 'license', ns),
-            'is_public': self._get_text_ns(root, 'is_public', ns) == 'true'
+            'is_public': self._get_text_ns(root, 'is_public', ns) == 'true',
+            'group_weighting_scheme': self._get_text_ns(root, 'group_weighting_scheme', ns),
         }
         
         return settings
@@ -253,26 +257,92 @@ class CanvasParser:
         return None
     
     def get_assignment_settings(self, identifier: str) -> Optional[Dict]:
-        """Get assignment settings"""
+        """Get assignment settings and HTML content"""
         # Look for assignment directory
         assignment_dir = self.extract_dir / identifier
         settings_file = assignment_dir / "assignment_settings.xml"
         
-        if settings_file.exists():
-            tree = ET.parse(settings_file)
-            root = tree.getroot()
+        if not settings_file.exists():
+            return None
             
-            return {
-                'identifier': root.get('identifier'),
-                'title': self._get_text(root, 'title'),
-                'points_possible': float(self._get_text(root, 'points_possible', '0')),
-                'grading_type': self._get_text(root, 'grading_type'),
-                'submission_types': self._get_text(root, 'submission_types'),
-                'workflow_state': self._get_text(root, 'workflow_state'),
-                'due_at': self._get_text(root, 'due_at'),
-            }
+        tree = ET.parse(settings_file)
+        root = tree.getroot()
         
-        return None
+        # Handle namespace
+        ns = {'cc': 'http://canvas.instructure.com/xsd/cccv1p0'}
+        
+        # Parse settings with namespace support
+        settings = {
+            'identifier': root.get('identifier'),
+            'title': self._get_text_ns(root, 'title', ns),
+            'points_possible': self._safe_float(self._get_text_ns(root, 'points_possible', ns), 0),
+            'grading_type': self._get_text_ns(root, 'grading_type', ns),
+            'submission_types': self._get_text_ns(root, 'submission_types', ns),
+            'workflow_state': self._get_text_ns(root, 'workflow_state', ns),
+            'due_at': self._get_text_ns(root, 'due_at', ns),
+            'assignment_group_identifierref': self._get_text_ns(root, 'assignment_group_identifierref', ns),
+        }
+        
+        # Find and read assignment HTML content
+        html_content = None
+        for html_file in assignment_dir.glob("*.html"):
+            with open(html_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+                soup = BeautifulSoup(content, 'html.parser')
+                body = soup.find('body')
+                if body:
+                    html_content = ''.join(str(child) for child in body.children)
+                else:
+                    html_content = content
+                break
+        
+        settings['html_content'] = html_content
+        
+        return settings
+    
+    def _safe_float(self, value: str, default: float = 0) -> float:
+        """Safely convert string to float"""
+        try:
+            return float(value) if value else default
+        except (ValueError, TypeError):
+            return default
+    
+    def _parse_assignment_groups(self) -> List[Dict]:
+        """Parse course_settings/assignment_groups.xml"""
+        groups_path = self.extract_dir / "course_settings" / "assignment_groups.xml"
+        
+        if not groups_path.exists():
+            return []
+        
+        tree = ET.parse(groups_path)
+        root = tree.getroot()
+        
+        # Handle namespace
+        ns = {'cc': 'http://canvas.instructure.com/xsd/cccv1p0'}
+        
+        groups = []
+        
+        # Try with namespace first
+        for group_elem in root.findall('cc:assignmentGroup', ns):
+            group = self._parse_assignment_group(group_elem, ns)
+            groups.append(group)
+        
+        # Fallback to no namespace
+        if not groups:
+            for group_elem in root.findall('.//assignmentGroup'):
+                group = self._parse_assignment_group(group_elem, {})
+                groups.append(group)
+        
+        return groups
+    
+    def _parse_assignment_group(self, group_elem: ET.Element, ns: Dict) -> Dict:
+        """Parse individual assignment group element"""
+        return {
+            'identifier': group_elem.get('identifier'),
+            'title': self._get_text_ns(group_elem, 'title', ns),
+            'position': int(self._get_text_ns(group_elem, 'position', ns) or '0'),
+            'group_weight': self._safe_float(self._get_text_ns(group_elem, 'group_weight', ns), 0),
+        }
     
     def _get_text(self, elem: ET.Element, tag: str, default: str = '') -> str:
         """Safely get text from XML element"""

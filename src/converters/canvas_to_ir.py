@@ -29,6 +29,7 @@ class CanvasToIRConverter:
         self.capa_converter = QTIToCapaConverter(verbose=verbose)
         self.asset_manager = None  # Set during convert()
         self.skipped_items = []  # Track unsupported content
+        self.assignment_groups = {}  # Map identifier to group info
     
     def convert(self, canvas_data: Dict, canvas_parser) -> CourseIR:
         """
@@ -44,6 +45,10 @@ class CanvasToIRConverter:
         if self.verbose:
             print(" Converting to intermediate representation...")
         
+        # Build assignment groups map
+        for group in canvas_data.get('assignment_groups', []):
+            self.assignment_groups[group['identifier']] = group
+        
         # Extract course metadata
         org, course, run = self._extract_course_id(canvas_data)
         
@@ -57,6 +62,10 @@ class CanvasToIRConverter:
             start_date=self._parse_date(canvas_data.get('start_date')),
             end_date=self._parse_date(canvas_data.get('end_date'))
         )
+        
+        # Store assignment groups for grading policy generation
+        course_ir.assignment_groups = canvas_data.get('assignment_groups', [])
+        course_ir.group_weighting_scheme = canvas_data.get('group_weighting_scheme', '')
         
         # Build prerequisite map
         prereq_map = self._build_prerequisite_map(canvas_data['modules'])
@@ -148,10 +157,13 @@ class CanvasToIRConverter:
         
         chapter_url_name = self.url_gen.generate(module['title'])
         
+        # Check if module is published (active) or unpublished
+        is_published = module['workflow_state'] == 'active'
+        
         chapter = ChapterIR(
             display_name=module['title'],
             url_name=chapter_url_name,
-            published=(module['workflow_state'] == 'active'),
+            published=is_published,
             position=module['position']
         )
         
@@ -159,7 +171,7 @@ class CanvasToIRConverter:
         sequential = SequentialIR(
             display_name=module['title'],
             url_name=f"{chapter_url_name}_content",
-            published=(module['workflow_state'] == 'active'),
+            published=is_published,
             prereq=prereq,
             require_sequential=module.get('require_sequential_progress', False)
         )
@@ -194,10 +206,13 @@ class CanvasToIRConverter:
             if qti_path.exists():
                 content_type = 'Quizzes::Quiz'
         
+        # Check if item is published (active) or unpublished
+        is_published = item['workflow_state'] == 'active'
+        
         vertical = VerticalIR(
             display_name=item['title'],
             url_name=self.url_gen.generate(item['title']),
-            published=(item['workflow_state'] == 'active')
+            published=is_published
         )
         
         # Convert based on content type
@@ -273,7 +288,7 @@ class CanvasToIRConverter:
         item: Dict, 
         canvas_parser
     ) -> Optional[ComponentIR]:
-        """Convert assignment to HTML component (for now)"""
+        """Convert assignment to HTML component with full content"""
         
         identifier = item['identifierref']
         settings = canvas_parser.get_assignment_settings(identifier)
@@ -283,26 +298,46 @@ class CanvasToIRConverter:
                 print(f"     No settings found for assignment: {item['title']}")
             return None
         
-        # Create HTML description
+        # Get assignment metadata
         points = settings.get('points_possible', 0)
-        submission_type = settings.get('submission_types', 'not_graded')
-        grading_type = settings.get('grading_type', 'not_graded')
+        submission_types = settings.get('submission_types', '')
+        grading_type = settings.get('grading_type', '')
+        html_content = settings.get('html_content', '')
         
-        html_content = f'''<div class="assignment-info">
-    <h3>{item['title']}</h3>
-    <p><strong>Submission Type:</strong> {submission_type}</p>
-    <p><strong>Grading Type:</strong> {grading_type}</p>
+        # Format submission types for display
+        submission_display = submission_types.replace(',', ', ').replace('_', ' ') if submission_types else 'Not specified'
+        grading_display = grading_type.replace('_', ' ').title() if grading_type else 'Not specified'
+        
+        # Build the full HTML content
+        content_parts = []
+        
+        # Assignment header/metadata
+        content_parts.append(f'''<div class="assignment-info" style="background: #f5f5f5; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
+    <p><strong>Assignment:</strong> {item['title']}</p>
     <p><strong>Points Possible:</strong> {points}</p>
-    
-    <p><em>Note: This assignment was imported from Canvas. 
-    Submission and grading functionality needs to be configured in Open edX.</em></p>
-</div>'''
+    <p><strong>Submission Type:</strong> {submission_display}</p>
+    <p><strong>Grading Type:</strong> {grading_display}</p>
+</div>''')
+        
+        # Include the actual assignment content if available
+        if html_content:
+            # Convert asset URLs in the assignment content
+            if self.asset_manager:
+                html_content = self.asset_manager.convert_html_urls(html_content)
+            content_parts.append(f'<div class="assignment-content">\n{html_content}\n</div>')
+        
+        # Add note about Canvas import
+        content_parts.append('''<div class="assignment-note" style="background: #fff3cd; padding: 10px; border-radius: 5px; margin-top: 20px; border: 1px solid #ffc107;">
+    <p><em>Note: This assignment was imported from Canvas. Submission and grading functionality needs to be configured in Open edX.</em></p>
+</div>''')
+        
+        full_content = '\n'.join(content_parts)
         
         return ComponentIR(
             type='html',
             display_name=item['title'],
             url_name=self.url_gen.generate(f"{item['title']}_assignment"),
-            content=html_content,
+            content=full_content,
             settings=settings,
             canvas_source=item
         )

@@ -72,6 +72,10 @@ class CourseIR:
     # Assets and resources
     assets: Dict[str, str] = field(default_factory=dict)  # identifier -> filename
     
+    # Grading configuration (from Canvas assignment groups)
+    assignment_groups: List[Dict[str, Any]] = field(default_factory=list)
+    group_weighting_scheme: str = ""  # 'percent' for weighted grading
+    
     # Unsupported/special items
     lti_tools: List[Dict[str, Any]] = field(default_factory=list)
     unsupported_items: List[Dict[str, Any]] = field(default_factory=list)

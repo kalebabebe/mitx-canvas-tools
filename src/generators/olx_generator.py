@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Dict
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
+import json
 
 from ..models.intermediate_rep import (
     CourseIR, ChapterIR, SequentialIR, VerticalIR, ComponentIR
@@ -45,6 +46,15 @@ class OLXGenerator:
         # Generate policies
         self._generate_policies(course_ir)
         
+        # Generate about page
+        self._generate_about_page(course_ir)
+        
+        # Generate info/updates
+        self._generate_info_updates()
+        
+        # Generate assets.xml
+        self._generate_assets_xml()
+        
         if self.verbose:
             print(f"    OLX generated successfully")
     
@@ -59,7 +69,11 @@ class OLXGenerator:
             'problem',
             'video',
             'static',
-            'policies'
+            'policies',
+            'about',
+            'info',
+            'assets',
+            'drafts',
         ]
         
         for dir_name in dirs:
@@ -156,6 +170,10 @@ class OLXGenerator:
         vert_elem = ET.Element('vertical')
         vert_elem.set('display_name', vertical.display_name)
         
+        # Handle unpublished verticals
+        if not vertical.published:
+            vert_elem.set('visible_to_staff_only', 'true')
+        
         # Add components
         for component in vertical.components:
             self._generate_component(component)
@@ -207,15 +225,66 @@ class OLXGenerator:
             f.write(component.content)
     
     def _generate_policies(self, course_ir: CourseIR):
-        """Generate policy files"""
+        """Generate policy files including grading policy from Canvas assignment groups"""
         
         # Create policy directory
         policy_dir = self.output_dir / 'policies' / course_ir.run
         policy_dir.mkdir(parents=True, exist_ok=True)
         
-        # Basic grading policy
-        grading_policy = {
-            "GRADER": [
+        # Build grading policy from Canvas assignment groups
+        grading_policy = self._build_grading_policy(course_ir)
+        
+        with open(policy_dir / 'grading_policy.json', 'w') as f:
+            json.dump(grading_policy, f, indent=4)
+        
+        # Build policy.json with course settings
+        policy = {
+            f"course/{course_ir.run}": {
+                "display_name": course_ir.title,
+                "language": course_ir.language,
+                "self_paced": course_ir.self_paced,
+                "tabs": [
+                    {"course_staff_only": False, "name": "Course", "type": "courseware"},
+                    {"course_staff_only": False, "name": "Progress", "type": "progress"},
+                    {"course_staff_only": False, "name": "Dates", "type": "dates"},
+                    {"course_staff_only": False, "name": "Discussion", "type": "discussion"},
+                    {"course_staff_only": False, "is_hidden": True, "name": "Wiki", "type": "wiki"},
+                ]
+            }
+        }
+        
+        with open(policy_dir / 'policy.json', 'w') as f:
+            json.dump(policy, f, indent=4)
+    
+    def _build_grading_policy(self, course_ir: CourseIR) -> Dict:
+        """Build grading policy from Canvas assignment groups"""
+        
+        grader = []
+        
+        # Check if we have assignment groups with weights
+        assignment_groups = getattr(course_ir, 'assignment_groups', [])
+        group_weighting = getattr(course_ir, 'group_weighting_scheme', '')
+        
+        if assignment_groups and group_weighting == 'percent':
+            # Use Canvas assignment groups with weights
+            for group in assignment_groups:
+                weight = group.get('group_weight', 0)
+                if weight > 0:  # Only include groups with non-zero weight
+                    # Convert Canvas group name to Open edX format
+                    title = group.get('title', 'Homework')
+                    short_label = self._make_short_label(title)
+                    
+                    grader.append({
+                        "drop_count": 0,
+                        "min_count": 1,
+                        "short_label": short_label,
+                        "type": title,
+                        "weight": weight / 100.0  # Canvas uses percentage, Open edX uses decimal
+                    })
+        
+        # If no valid groups or no weighting, use default
+        if not grader:
+            grader = [
                 {
                     "drop_count": 0,
                     "min_count": 1,
@@ -223,20 +292,68 @@ class OLXGenerator:
                     "type": "Homework",
                     "weight": 1.0
                 }
-            ],
+            ]
+        
+        return {
+            "GRADER": grader,
             "GRADE_CUTOFFS": {
                 "Pass": 0.5
             }
         }
+    
+    def _make_short_label(self, title: str) -> str:
+        """Create a short label from assignment group title"""
+        # Take first letters of each word, up to 3 characters
+        words = title.split()
+        if len(words) == 1:
+            return title[:3].upper()
+        else:
+            return ''.join(word[0] for word in words[:3]).upper()
+    
+    def _generate_about_page(self, course_ir: CourseIR):
+        """Generate about/overview.html"""
         
-        import json
-        with open(policy_dir / 'grading_policy.json', 'w') as f:
-            json.dump(grading_policy, f, indent=2)
+        overview_content = f'''<section class="about">
+  <h2>About This Course</h2>
+  <p>{course_ir.title}</p>
+  <p>This course was imported from Canvas LMS.</p>
+</section>
+
+<section class="prerequisites">
+  <h2>Requirements</h2>
+  <p>Please check with your instructor for specific course requirements.</p>
+</section>
+
+<section class="course-staff">
+  <h2>Course Staff</h2>
+  <article class="teacher">
+    <h3>Instructor</h3>
+    <p>Contact your course instructor for more information.</p>
+  </article>
+</section>
+'''
         
-        # Basic policy file
-        policy = {}
-        with open(policy_dir / 'policy.json', 'w') as f:
-            json.dump(policy, f, indent=2)
+        about_file = self.output_dir / 'about' / 'overview.html'
+        with open(about_file, 'w', encoding='utf-8') as f:
+            f.write(overview_content)
+    
+    def _generate_info_updates(self):
+        """Generate info/updates.html"""
+        
+        updates_content = '<ol></ol>'
+        
+        updates_file = self.output_dir / 'info' / 'updates.html'
+        with open(updates_file, 'w', encoding='utf-8') as f:
+            f.write(updates_content)
+    
+    def _generate_assets_xml(self):
+        """Generate assets/assets.xml"""
+        
+        assets_content = '<assets/>'
+        
+        assets_file = self.output_dir / 'assets' / 'assets.xml'
+        with open(assets_file, 'w', encoding='utf-8') as f:
+            f.write(assets_content)
     
     def _prettify_xml(self, xml_string: str) -> str:
         """Prettify XML string"""
