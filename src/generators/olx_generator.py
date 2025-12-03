@@ -29,7 +29,7 @@ class OLXGenerator:
             course_ir: Course intermediate representation
         """
         if self.verbose:
-            print(f"📝 Generating OLX in {self.output_dir}...")
+            print(f" Generating OLX in {self.output_dir}...")
         
         # Create directory structure
         self._create_directories()
@@ -46,7 +46,7 @@ class OLXGenerator:
         self._generate_policies(course_ir)
         
         if self.verbose:
-            print(f"   ✅ OLX generated successfully")
+            print(f"    OLX generated successfully")
     
     def _create_directories(self):
         """Create OLX directory structure"""

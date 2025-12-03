@@ -28,6 +28,7 @@ class CanvasToIRConverter:
         self.qti_parser = QTIParser(verbose=verbose)
         self.capa_converter = QTIToCapaConverter(verbose=verbose)
         self.asset_manager = None  # Set during convert()
+        self.skipped_items = []  # Track unsupported content
     
     def convert(self, canvas_data: Dict, canvas_parser) -> CourseIR:
         """
@@ -41,7 +42,7 @@ class CanvasToIRConverter:
             CourseIR object
         """
         if self.verbose:
-            print("🔄 Converting to intermediate representation...")
+            print(" Converting to intermediate representation...")
         
         # Extract course metadata
         org, course, run = self._extract_course_id(canvas_data)
@@ -70,7 +71,12 @@ class CanvasToIRConverter:
             course_ir.chapters.append(chapter)
         
         if self.verbose:
-            print(f"   ✅ Converted {len(course_ir.chapters)} chapters")
+            print(f"    Converted {len(course_ir.chapters)} chapters")
+        
+        # Add Import Notes chapter if there are skipped items
+        if self.skipped_items:
+            notes_chapter = self._create_import_notes_chapter()
+            course_ir.chapters.append(notes_chapter)
         
         return course_ir
     
@@ -166,7 +172,7 @@ class CanvasToIRConverter:
                     sequential.verticals.append(vertical)
             except Exception as e:
                 if self.verbose:
-                    print(f"   ⚠️  Error converting item '{item['title']}': {e}")
+                    print(f"     Error converting item '{item['title']}': {e}")
         
         chapter.sequentials.append(sequential)
         
@@ -180,6 +186,13 @@ class CanvasToIRConverter:
         """Convert Canvas module item to Vertical with components"""
         
         content_type = item['content_type']
+        
+        # Check if this is actually a quiz by looking for assessment_qti.xml
+        identifier = item.get('identifierref')
+        if identifier and content_type not in ['Quizzes::Quiz', 'WikiPage', 'Assignment']:
+            qti_path = canvas_parser.extract_dir / identifier / "assessment_qti.xml"
+            if qti_path.exists():
+                content_type = 'Quizzes::Quiz'
         
         vertical = VerticalIR(
             display_name=item['title'],
@@ -205,7 +218,12 @@ class CanvasToIRConverter:
                     vertical.components.append(component)
         
         elif content_type == 'ContextExternalTool':
-            # LTI tool - add to unsupported (handled by caller)
+            # LTI tool - track as skipped
+            self.skipped_items.append({
+                'type': 'LTI Tool',
+                'title': item['title'],
+                'url': item.get('url', 'N/A')
+            })
             pass
         
         return vertical if vertical.components else None
@@ -222,7 +240,7 @@ class CanvasToIRConverter:
         
         if not html_content:
             if self.verbose:
-                print(f"   ⚠️  No content found for page: {item['title']}")
+                print(f"     No content found for page: {item['title']}")
             return None
         
         # Extract body content
@@ -262,7 +280,7 @@ class CanvasToIRConverter:
         
         if not settings:
             if self.verbose:
-                print(f"   ⚠️  No settings found for assignment: {item['title']}")
+                print(f"     No settings found for assignment: {item['title']}")
             return None
         
         # Create HTML description
@@ -303,7 +321,7 @@ class CanvasToIRConverter:
         
         if not qti_path.exists():
             if self.verbose:
-                print(f"   ⚠️  No QTI file found for quiz: {item['title']}")
+                print(f"     No QTI file found for quiz: {item['title']}")
             return []
         
         # Parse QTI
@@ -311,7 +329,7 @@ class CanvasToIRConverter:
         
         if not quiz_data or not quiz_data.get('questions'):
             if self.verbose:
-                print(f"   ⚠️  No questions found in quiz: {item['title']}")
+                print(f"     No questions found in quiz: {item['title']}")
             return []
         
         # Convert each question to a component
@@ -332,9 +350,66 @@ class CanvasToIRConverter:
             components.append(component)
         
         if self.verbose:
-            print(f"   ✅ Converted quiz '{item['title']}': {len(components)} questions")
+            print(f"    Converted quiz '{item['title']}': {len(components)} questions")
         
         return components
+    
+    def _create_import_notes_chapter(self) -> ChapterIR:
+        """Create Import Notes chapter with unsupported content report"""
+        chapter = ChapterIR(
+            display_name="Import Notes",
+            url_name=self.url_gen.generate("import_notes"),
+            published=True
+        )
+        
+        sequential = SequentialIR(
+            display_name="Unsupported Content",
+            url_name=self.url_gen.generate("unsupported_content"),
+            published=True
+        )
+        
+        vertical = VerticalIR(
+            display_name="Items Requiring Manual Review",
+            url_name=self.url_gen.generate("manual_review"),
+            published=True
+        )
+        
+        # Build HTML report
+        html_content = '<h2>Unsupported Content</h2>\n'
+        html_content += '<p>The following items could not be automatically converted and require manual setup in Open edX:</p>\n\n'
+        
+        # Group by type
+        by_type = {}
+        for item in self.skipped_items:
+            item_type = item['type']
+            if item_type not in by_type:
+                by_type[item_type] = []
+            by_type[item_type].append(item)
+        
+        # Generate report by type
+        for item_type, items in sorted(by_type.items()):
+            html_content += f'<h3>{item_type}s</h3>\n<ul>\n'
+            for item in items:
+                html_content += f'  <li><strong>{item["title"]}</strong>'
+                if item.get('url'):
+                    html_content += f'<br/>URL: {item["url"]}'
+                html_content += '</li>\n'
+            html_content += '</ul>\n\n'
+        
+        html_content += '<p><em>These items have been skipped during conversion. Please recreate them manually in Open edX Studio.</em></p>'
+        
+        component = ComponentIR(
+            type='html',
+            display_name='Unsupported Items Report',
+            url_name=self.url_gen.generate('unsupported_report'),
+            content=html_content
+        )
+        
+        vertical.components.append(component)
+        sequential.verticals.append(vertical)
+        chapter.sequentials.append(sequential)
+        
+        return chapter
     
     def _parse_date(self, date_str: Optional[str]) -> Optional[datetime]:
         """Parse ISO date string"""

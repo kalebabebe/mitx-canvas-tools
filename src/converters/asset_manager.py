@@ -27,7 +27,7 @@ class AssetManager:
         
         if not web_resources.exists():
             if self.verbose:
-                print("   ⚠️  No web_resources directory found")
+                print("     No web_resources directory found")
             return 0
         
         # Create static directory
@@ -48,7 +48,7 @@ class AssetManager:
                 count += 1
         
         if self.verbose and count > 0:
-            print(f"   📁 Copied {count} assets to /static/")
+            print(f"    Copied {count} assets to /static/")
         
         return count
     

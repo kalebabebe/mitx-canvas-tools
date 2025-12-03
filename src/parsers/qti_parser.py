@@ -32,7 +32,7 @@ class QTIParser:
         """
         if not qti_path.exists():
             if self.verbose:
-                print(f"⚠️  QTI file not found: {qti_path}")
+                print(f"  QTI file not found: {qti_path}")
             return None
         
         tree = ET.parse(qti_path)
@@ -45,7 +45,7 @@ class QTIParser:
         
         if assessment is None:
             if self.verbose:
-                print("⚠️  No assessment element found in QTI")
+                print("  No assessment element found in QTI")
             return None
         
         quiz_data = {
@@ -65,10 +65,102 @@ class QTIParser:
             if question:
                 quiz_data['questions'].append(question)
         
+        # Check for question bank references in this file
+        self._load_banks_from_assessment(assessment, qti_path, quiz_data)
+        
+        # Also check non_cc_assessments file with same quiz ID
+        base_dir = qti_path.parent.parent
+        quiz_id = quiz_data['identifier']
+        alt_qti_path = base_dir / "non_cc_assessments" / f"{quiz_id}.xml.qti"
+        
+        if alt_qti_path.exists() and alt_qti_path != qti_path:
+            try:
+                alt_tree = ET.parse(alt_qti_path)
+                alt_root = alt_tree.getroot()
+                alt_assessment = alt_root.find('qti:assessment', self.NS)
+                if alt_assessment is None:
+                    alt_assessment = alt_root.find('.//assessment')
+                
+                if alt_assessment is not None:
+                    self._load_banks_from_assessment(alt_assessment, qti_path, quiz_data)
+            except:
+                pass
+        
         if self.verbose:
-            print(f"   📝 Parsed quiz: {quiz_data['title']} ({len(quiz_data['questions'])} questions)")
+            print(f"    Parsed quiz: {quiz_data['title']} ({len(quiz_data['questions'])} questions)")
         
         return quiz_data
+    
+    def _load_banks_from_assessment(self, assessment: ET.Element, qti_path: Path, quiz_data: Dict):
+        """Load question banks referenced in an assessment"""
+        sections = assessment.findall('.//qti:section', self.NS)
+        if not sections:
+            sections = assessment.findall('.//section')
+        
+        for section in sections:
+            # Look for selection from question bank
+            selection = section.find('.//qti:selection', self.NS)
+            if selection is None:
+                selection = section.find('.//selection')
+            
+            if selection is not None:
+                sourcebank_ref = selection.find('qti:sourcebank_ref', self.NS)
+                if sourcebank_ref is None:
+                    sourcebank_ref = selection.find('sourcebank_ref')
+                
+                selection_number_elem = selection.find('qti:selection_number', self.NS)
+                if selection_number_elem is None:
+                    selection_number_elem = selection.find('selection_number')
+                
+                if sourcebank_ref is not None and selection_number_elem is not None:
+                    bank_id = sourcebank_ref.text
+                    num_questions = int(selection_number_elem.text)
+                    
+                    # Load questions from bank
+                    bank_questions = self._load_question_bank(qti_path.parent.parent, bank_id, num_questions)
+                    quiz_data['questions'].extend(bank_questions)
+    
+    def _load_question_bank(self, base_dir: Path, bank_id: str, num_questions: int) -> list:
+        """Load questions from question bank file"""
+        bank_path = base_dir / "non_cc_assessments" / f"{bank_id}.xml.qti"
+        
+        if not bank_path.exists():
+            if self.verbose:
+                print(f"     Question bank not found: {bank_id}")
+            return []
+        
+        try:
+            tree = ET.parse(bank_path)
+            root = tree.getroot()
+            
+            # Find objectbank
+            objectbank = root.find('.//qti:objectbank', self.NS)
+            if objectbank is None:
+                objectbank = root.find('.//objectbank')
+            
+            if objectbank is None:
+                return []
+            
+            # Parse all items from bank
+            items = objectbank.findall('.//qti:item', self.NS)
+            if not items:
+                items = objectbank.findall('.//item')
+            
+            questions = []
+            for item in items[:num_questions]:  # Take only requested number
+                question = self._parse_item(item)
+                if question:
+                    questions.append(question)
+            
+            if self.verbose and questions:
+                print(f"    Loaded {len(questions)} questions from bank")
+            
+            return questions
+            
+        except Exception as e:
+            if self.verbose:
+                print(f"     Error loading question bank: {e}")
+            return []
     
     def _parse_metadata(self, assessment: ET.Element) -> Dict:
         """Parse quiz metadata"""

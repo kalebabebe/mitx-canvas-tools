@@ -41,7 +41,7 @@ class CanvasParser:
         self.extract_dir = self.temp_dir / "extracted"
         
         if self.verbose:
-            print(f"📦 Extracting {imscc_path.name}...")
+            print(f" Extracting {imscc_path.name}...")
         
         with zipfile.ZipFile(imscc_path, 'r') as zip_ref:
             zip_ref.extractall(self.extract_dir)
@@ -107,7 +107,7 @@ class CanvasParser:
         
         if not module_path.exists():
             if self.verbose:
-                print("⚠️  No module_meta.xml found")
+                print("  No module_meta.xml found")
             return []
         
         tree = ET.parse(module_path)

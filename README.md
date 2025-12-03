@@ -11,29 +11,38 @@ python -m src.converter course.imscc output_dir
 
 ## Features
 
-- ✅ Modules → Chapters/Sections
-- ✅ Wiki pages → HTML components  
-- ✅ Quizzes → CAPA problems (5 types)
-- ✅ Assets → /static/ with URL conversion
-- ✅ Assignments → Info pages
+- ✅ Course structure (modules → chapters)
+- ✅ Wiki pages with asset URL conversion
+- ✅ Quizzes with 5 question types
+- ✅ Question banks (loads from separate files)
+- ✅ Multiple acceptable answers (short answer)
+- ✅ Asset copying to /static/
+- ✅ Unsupported content report (LTI tools, etc.)
+- ✅ Clean, emoji-free output
 
 ## Supported Question Types
 
-| Type | Status |
-|------|--------|
-| Multiple Choice | ✅ |
-| True/False | ✅ |
-| Multiple Response | ✅ |
-| Short Answer | ✅ |
-| Numerical | ✅ |
+| Type | Canvas | Open edX |
+|------|--------|----------|
+| Multiple Choice | `cc.multiple_choice.v0p1` | `<multiplechoiceresponse>` |
+| True/False | `cc.true_false.v0p1` | `<multiplechoiceresponse>` |
+| Multiple Response | `cc.multiple_response.v0p1` | `<choiceresponse>` |
+| Short Answer | `cc.fib.v0p1` | `<stringresponse>` |
+| Numerical | `numerical_question` | `<numericalresponse>` |
 
 ## Usage
 
-### Python
+### Python API
 ```python
 from src.converter import convert_canvas_to_openedx
 
 report = convert_canvas_to_openedx('course.imscc', 'output_dir', verbose=True)
+
+# Check results
+print(f"Chapters: {report['statistics']['chapters']}")
+print(f"Components: {report['statistics']['components']}")
+print(f"Assets: {report['statistics']['assets']}")
+print(f"Skipped: {report['skipped']}")
 ```
 
 ### Web Interface
@@ -41,15 +50,29 @@ report = convert_canvas_to_openedx('course.imscc', 'output_dir', verbose=True)
 python app.py  # http://localhost:5000
 ```
 
-## Asset Management
+## New Features
 
-Automatically copies Canvas assets and converts URLs:
-```html
-<!-- Canvas -->
-<img src="$IMS-CC-FILEBASE$/image.png"/>
+### Question Banks
+Automatically loads questions from Canvas question bank files (`non_cc_assessments/*.qti`).
 
-<!-- Open edX -->
-<img src="/static/image.png"/>
+### Multiple Answers
+Short answer questions support multiple acceptable answers:
+```xml
+<stringresponse answer="red" type="ci">
+  <additional_answer answer="blue"/>
+  <additional_answer answer="yellow"/>
+</stringresponse>
+```
+
+### Unsupported Content Report
+Creates "Import Notes" chapter listing all LTI tools and unsupported items that need manual setup.
+
+### Validation Report
+```python
+{
+  'statistics': {'chapters': 10, 'components': 61, 'assets': 48},
+  'skipped': {'LTI Tool': 2}
+}
 ```
 
 ## Output Structure
@@ -62,7 +85,8 @@ output_dir/
 ├── vertical/*.xml
 ├── html/*.xml + *.html
 ├── problem/*.xml
-└── static/              # Assets from Canvas
+├── static/              # Assets from Canvas
+└── Import Notes/        # Unsupported content report
 ```
 
 ## Deployment
@@ -80,28 +104,12 @@ python app.py
 
 ## Limitations
 
-- Question banks not supported (inline questions only)
-- Essays show manual grading note
-- LTI tools skipped
-- Assignments → info pages only
-
-## Troubleshooting
-
-**Quiz has 0 questions?** Check if using question banks (not supported)
-
-**Images not loading?** Verify `/static/` directory created and URLs converted
-
-**Import fails?** Check Studio logs and validate XML structure
-
-## Documentation
-
-- `docs/SHORT_ANSWER_NUMERICAL.md` - Question type details
+- Essay questions (manual grading note)
+- Some Canvas-specific features
 
 ## Requirements
 
 - Python 3.11+
 - beautifulsoup4, lxml, Flask
 
-## License
-
-MIT
+See `requirements.txt` for complete list.

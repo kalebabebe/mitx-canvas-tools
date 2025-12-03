@@ -41,19 +41,19 @@ class CanvasToOpenEdXConverter:
         
         # Step 1: Parse Canvas course
         if self.verbose:
-            print("\n📦 Step 1: Parsing Canvas course...")
+            print("\nStep 1: Parsing Canvas course...")
         
         with CanvasParser(verbose=self.verbose) as parser:
             self.canvas_parser = parser
             canvas_data = parser.parse(imscc_path)
             
             if self.verbose:
-                print(f"   ✅ Parsed: {canvas_data['title']}")
-                print(f"   📚 Modules: {len(canvas_data['modules'])}")
+                print(f"   Parsed: {canvas_data['title']}")
+                print(f"   Modules: {len(canvas_data['modules'])}")
             
             # Step 2: Convert to IR
             if self.verbose:
-                print("\n🔄 Step 2: Converting to intermediate representation...")
+                print("\nStep 2: Converting to intermediate representation...")
             
             # Initialize asset manager
             asset_manager = AssetManager(
@@ -66,18 +66,18 @@ class CanvasToOpenEdXConverter:
             course_ir = self.ir_converter.convert(canvas_data, parser)
             
             if self.verbose:
-                print(f"   ✅ Course: {course_ir.org}/{course_ir.course}/{course_ir.run}")
-                print(f"   📚 Chapters: {len(course_ir.chapters)}")
+                print(f"   Course: {course_ir.org}/{course_ir.course}/{course_ir.run}")
+                print(f"   Chapters: {len(course_ir.chapters)}")
             
             # Step 3: Copy assets
             if self.verbose:
-                print("\n📁 Step 3: Copying assets...")
+                print("\nStep 3: Copying assets...")
             
             asset_count = asset_manager.copy_all_assets()
             
             # Step 4: Generate OLX
             if self.verbose:
-                print("\n📝 Step 4: Generating Open edX OLX...")
+                print("\nStep 4: Generating Open edX OLX...")
             
             olx_gen = OLXGenerator(output_dir, verbose=self.verbose)
             olx_gen.generate(course_ir)
@@ -87,7 +87,7 @@ class CanvasToOpenEdXConverter:
         
         if self.verbose:
             print("\n" + "=" * 60)
-            print("✅ Conversion Complete!")
+            print("Conversion Complete")
             print("=" * 60)
             print(f"\nOLX Output: {output_dir}")
         
@@ -115,6 +115,12 @@ class CanvasToOpenEdXConverter:
             for vert in seq.verticals
         )
         
+        # Count skipped items by type
+        skipped_by_type = {}
+        for item in self.ir_converter.skipped_items:
+            item_type = item['type']
+            skipped_by_type[item_type] = skipped_by_type.get(item_type, 0) + 1
+        
         report = {
             'course_title': course_ir.title,
             'course_id': f"{course_ir.org}/{course_ir.course}/{course_ir.run}",
@@ -126,6 +132,7 @@ class CanvasToOpenEdXConverter:
                 'components': total_components,
                 'assets': asset_count
             },
+            'skipped': skipped_by_type,
             'output_directory': output_dir
         }
         
