@@ -49,8 +49,8 @@ class OLXGenerator:
         # Generate about page
         self._generate_about_page(course_ir)
         
-        # Generate info/updates
-        self._generate_info_updates()
+        # Generate info/updates from front page
+        self._generate_info_updates(course_ir)
         
         # Generate assets.xml
         self._generate_assets_xml()
@@ -67,6 +67,7 @@ class OLXGenerator:
             'vertical',
             'html',
             'problem',
+            'openassessment',
             'video',
             'static',
             'policies',
@@ -195,7 +196,8 @@ class OLXGenerator:
             self._generate_html_component(component)
         elif component.type == 'problem':
             self._generate_problem_component(component)
-        # More component types will be added
+        elif component.type == 'openassessment':
+            self._generate_ora_component(component)
     
     def _generate_html_component(self, component: ComponentIR):
         """Generate HTML component (XML + HTML file)"""
@@ -222,6 +224,14 @@ class OLXGenerator:
         # For now, just write the XML content
         problem_file = self.output_dir / 'problem' / f'{component.url_name}.xml'
         with open(problem_file, 'w', encoding='utf-8') as f:
+            f.write(component.content)
+    
+    def _generate_ora_component(self, component: ComponentIR):
+        """Generate Open Response Assessment (ORA) component"""
+        
+        # ORA components are stored as XML files
+        ora_file = self.output_dir / 'openassessment' / f'{component.url_name}.xml'
+        with open(ora_file, 'w', encoding='utf-8') as f:
             f.write(component.content)
     
     def _generate_policies(self, course_ir: CourseIR):
@@ -337,10 +347,20 @@ class OLXGenerator:
         with open(about_file, 'w', encoding='utf-8') as f:
             f.write(overview_content)
     
-    def _generate_info_updates(self):
-        """Generate info/updates.html"""
+    def _generate_info_updates(self, course_ir: CourseIR = None):
+        """Generate info/updates.html from Canvas front page if available"""
         
-        updates_content = '<ol></ol>'
+        if course_ir and course_ir.front_page_content:
+            # Use Canvas front page content wrapped in update format
+            # The <ol> with <li> items is the expected format for updates
+            updates_content = f'''<ol>
+<li>
+<h2>Welcome</h2>
+{course_ir.front_page_content}
+</li>
+</ol>'''
+        else:
+            updates_content = '<ol></ol>'
         
         updates_file = self.output_dir / 'info' / 'updates.html'
         with open(updates_file, 'w', encoding='utf-8') as f:

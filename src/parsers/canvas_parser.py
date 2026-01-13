@@ -256,6 +256,38 @@ class CanvasParser:
         
         return None
     
+    def get_front_page(self) -> Optional[Tuple[str, str]]:
+        """
+        Find the front page (home page) of the Canvas course.
+        
+        Returns:
+            Tuple of (identifier, html_content) if found, None otherwise
+        """
+        wiki_dir = self.extract_dir / "wiki_content"
+        
+        if not wiki_dir.exists():
+            return None
+        
+        for html_file in wiki_dir.glob("*.html"):
+            with open(html_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+                soup = BeautifulSoup(content, 'html.parser')
+                
+                # Check for front_page meta tag
+                front_page_meta = soup.find('meta', {'name': 'front_page'})
+                if front_page_meta and front_page_meta.get('content') == 'true':
+                    # Get identifier
+                    identifier_meta = soup.find('meta', {'name': 'identifier'})
+                    identifier = identifier_meta.get('content') if identifier_meta else None
+                    
+                    # Extract body content
+                    body = soup.find('body')
+                    if body:
+                        body_content = ''.join(str(child) for child in body.children)
+                        return (identifier, body_content)
+        
+        return None
+    
     def get_assignment_settings(self, identifier: str) -> Optional[Dict]:
         """Get assignment settings and HTML content"""
         # Look for assignment directory

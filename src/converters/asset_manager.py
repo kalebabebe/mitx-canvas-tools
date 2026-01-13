@@ -6,7 +6,7 @@ Copies Canvas assets to Open edX static directory and converts URLs.
 
 import shutil
 from pathlib import Path
-from typing import Dict, Set
+from typing import Dict, Set, Optional
 import re
 import urllib.parse
 
@@ -20,6 +20,8 @@ class AssetManager:
         self.static_dir = output_dir / "static"
         self.verbose = verbose
         self.copied_files: Set[str] = set()
+        # Map of Canvas identifiers to OLX url_names for internal link conversion
+        self.identifier_to_url_name: Dict[str, str] = {}
         
     def copy_all_assets(self) -> int:
         """Copy all assets from Canvas web_resources to static directory"""
@@ -57,6 +59,9 @@ class AssetManager:
         if not html:
             return html
         
+        # Convert Panopto LTI embeds to direct embeds
+        html = self._convert_panopto_embeds(html)
+        
         # Convert $IMS-CC-FILEBASE$ references
         # Example: $IMS-CC-FILEBASE$/Uploaded%20Media/info.png -> /static/Uploaded Media/info.png
         def replace_filebase(match):
@@ -67,41 +72,8 @@ class AssetManager:
         
         html = re.sub(r'\$IMS-CC-FILEBASE\$/([^"\'>\s]+)', replace_filebase, html)
         
-        # Handle $WIKI_REFERENCE$ links - convert to plain text links or remove
-        # These are Canvas internal links that won't work in Open edX
-        # Pattern: href="$WIKI_REFERENCE$/pages/page-slug"
-        def replace_wiki_reference(match):
-            full_match = match.group(0)
-            # Extract the title attribute if present for better link text
-            title_match = re.search(r'title="([^"]*)"', full_match)
-            link_text_match = re.search(r'>([^<]+)<', full_match)
-            
-            # Get the page slug from the URL
-            slug_match = re.search(r'\$WIKI_REFERENCE\$/pages/([^"\']+)', full_match)
-            
-            if link_text_match:
-                link_text = link_text_match.group(1)
-                # Return just the link text without the anchor tag
-                return f'<span class="canvas-internal-link">{link_text}</span>'
-            elif title_match:
-                return f'<span class="canvas-internal-link">{title_match.group(1)}</span>'
-            elif slug_match:
-                # Clean up the slug to be human readable
-                slug = urllib.parse.unquote(slug_match.group(1))
-                slug = slug.replace('-', ' ').replace('%7C', '|')
-                return f'<span class="canvas-internal-link">{slug}</span>'
-            
-            return ''
-        
-        # Replace entire anchor tags containing $WIKI_REFERENCE$
-        html = re.sub(
-            r'<a[^>]*href="[^"]*\$WIKI_REFERENCE\$[^"]*"[^>]*>([^<]*)</a>',
-            lambda m: f'<span class="canvas-internal-link">{m.group(1)}</span>',
-            html
-        )
-        
-        # Also handle any remaining $WIKI_REFERENCE$ that might be in other attributes
-        html = re.sub(r'\$WIKI_REFERENCE\$/pages/[^"\'>\s]+', '#', html)
+        # Convert $WIKI_REFERENCE$ links to jump_to_id links or strip if not found
+        html = self._convert_wiki_references(html)
         
         # Handle $CANVAS_COURSE_REFERENCE$ links similarly
         html = re.sub(
@@ -118,5 +90,63 @@ class AssetManager:
             html
         )
         html = re.sub(r'\$CANVAS_OBJECT_REFERENCE\$/[^"\'>\s]+', '#', html)
+        
+        return html
+    
+    def _convert_panopto_embeds(self, html: str) -> str:
+        """Convert Canvas Panopto LTI iframes to direct Panopto embeds"""
+        
+        # Pattern to match Panopto LTI iframes
+        # Looks for iframes with src containing panopto and custom_context_delivery parameter
+        panopto_iframe_pattern = re.compile(
+            r'<iframe[^>]*src="[^"]*(?:panopto|PANOPTO)[^"]*custom_context_delivery(?:%3D|=)([a-f0-9-]+)[^"]*"[^>]*>(?:</iframe>)?',
+            re.IGNORECASE
+        )
+        
+        def replace_panopto_iframe(match):
+            video_id = match.group(1)
+            
+            # Build responsive Panopto embed
+            embed_html = f'''<div style="position: relative; width: 100%; height: 0; padding-bottom: 56.25%">
+	<iframe src="https://mit.hosted.panopto.com/Panopto/Pages/Embed.aspx?id={video_id}&autoplay=false&offerviewer=true&showtitle=true&showbrand=true&captions=false&interactivity=all" style="border: 1px solid #464646; position: absolute; top: 0; left: 0; width: 100%; height: 100%; box-sizing: border-box;" allowfullscreen allow="autoplay" aria-label="Panopto Embedded Video Player"></iframe>
+</div>'''
+            return embed_html
+        
+        html = panopto_iframe_pattern.sub(replace_panopto_iframe, html)
+        
+        return html
+    
+    def _convert_wiki_references(self, html: str) -> str:
+        """Convert $WIKI_REFERENCE$ links to jump_to_id or strip to plain text"""
+        
+        # Pattern to match anchor tags with $WIKI_REFERENCE$ hrefs
+        wiki_link_pattern = re.compile(
+            r'<a([^>]*)href="[^"]*\$WIKI_REFERENCE\$/pages/([^"]+)"([^>]*)>([^<]*)</a>',
+            re.IGNORECASE
+        )
+        
+        def replace_wiki_link(match):
+            before_href = match.group(1)
+            identifier = match.group(2)
+            after_href = match.group(3)
+            link_text = match.group(4)
+            
+            # URL decode the identifier
+            identifier = urllib.parse.unquote(identifier)
+            
+            # Try to find the url_name for this identifier
+            url_name = self.identifier_to_url_name.get(identifier)
+            
+            if url_name:
+                # Convert to jump_to_id link
+                return f'<a{before_href}href="/jump_to_id/{url_name}"{after_href}>{link_text}</a>'
+            else:
+                # Strip to plain text with class for styling
+                return f'<span class="canvas-internal-link">{link_text}</span>'
+        
+        html = wiki_link_pattern.sub(replace_wiki_link, html)
+        
+        # Clean up any remaining $WIKI_REFERENCE$ that might be in other attributes
+        html = re.sub(r'\$WIKI_REFERENCE\$/pages/[^"\'>\s]+', '#', html)
         
         return html

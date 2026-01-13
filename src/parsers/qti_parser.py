@@ -3,7 +3,7 @@ QTI Parser for Canvas Quizzes
 
 Parses QTI (Question & Test Interoperability) XML files from Canvas exports.
 Supports multiple question types including multiple choice, true/false, 
-multiple response, and more.
+multiple response, matching, fill in multiple blanks, and more.
 """
 
 import xml.etree.ElementTree as ET
@@ -184,16 +184,24 @@ class QTIParser:
     
     def _parse_item(self, item: ET.Element) -> Optional[Dict]:
         """Parse individual quiz item (question)"""
+        question_type = self._get_question_type(item)
+        
         question = {
             'identifier': item.get('ident'),
             'title': item.get('title', ''),
-            'type': self._get_question_type(item),
+            'type': question_type,
             'question_text': '',
             'choices': [],
             'correct_answers': [],
             'points': 1.0,
             'tolerance': None,
-            'answer_ranges': []
+            'answer_ranges': [],
+            # For matching/dropdown/fill-in-multiple-blanks
+            'blanks': [],  # List of {blank_id, prompt, choices, correct_answer}
+            # For calculated questions
+            'formula': None,
+            'variables': [],
+            'answer_tolerance': 0,
         }
         
         # Parse presentation (question text and choices) - try with namespace
@@ -215,51 +223,53 @@ class QTIParser:
                 if mattext is not None:
                     question['question_text'] = self._clean_html(mattext.text or '')
             
-            # Check for response_str (short answer or numerical)
-            response_str = presentation.find('.//qti:response_str', self.NS)
-            if response_str is None:
-                response_str = presentation.find('.//response_str')
-            
-            if response_str is not None:
-                # This is a text input question (short answer or numerical)
-                # Answers will be parsed from resprocessing
-                pass
+            # Route to specific parser based on question type
+            if question_type in ['matching_question', 'multiple_dropdowns_question', 'fill_in_multiple_blanks_question']:
+                self._parse_multi_response_item(presentation, question)
+            elif question_type == 'calculated_question':
+                self._parse_calculated_item(item, question)
             else:
-                # Parse choices for multiple choice questions - try with namespace
-                response_lid = presentation.find('.//qti:response_lid', self.NS)
-                if response_lid is None:
-                    response_lid = presentation.find('.//response_lid')
-                    
-                if response_lid is not None:
-                    cardinality = response_lid.get('rcardinality', 'Single')
-                    question['multiple_answers'] = (cardinality == 'Multiple')
-                    
-                    render_choice = response_lid.find('.//qti:render_choice', self.NS)
-                    if render_choice is None:
-                        render_choice = response_lid.find('.//render_choice')
+                # Check for response_str (short answer or numerical)
+                response_str = presentation.find('.//qti:response_str', self.NS)
+                if response_str is None:
+                    response_str = presentation.find('.//response_str')
+                
+                if response_str is None:
+                    # Parse choices for multiple choice questions - try with namespace
+                    response_lid = presentation.find('.//qti:response_lid', self.NS)
+                    if response_lid is None:
+                        response_lid = presentation.find('.//response_lid')
                         
-                    if render_choice is not None:
-                        # Find response labels - try with namespace
-                        labels = render_choice.findall('.//qti:response_label', self.NS)
-                        if not labels:
-                            labels = render_choice.findall('.//response_label')
+                    if response_lid is not None:
+                        cardinality = response_lid.get('rcardinality', 'Single')
+                        question['multiple_answers'] = (cardinality == 'Multiple')
+                        
+                        render_choice = response_lid.find('.//qti:render_choice', self.NS)
+                        if render_choice is None:
+                            render_choice = response_lid.find('.//render_choice')
                             
-                        for label in labels:
-                            choice_id = label.get('ident')
-                            
-                            # Find material in label
-                            mat = label.find('.//qti:material/qti:mattext', self.NS)
-                            if mat is None:
-                                mat = label.find('.//material/mattext')
+                        if render_choice is not None:
+                            # Find response labels - try with namespace
+                            labels = render_choice.findall('.//qti:response_label', self.NS)
+                            if not labels:
+                                labels = render_choice.findall('.//response_label')
                                 
-                            choice_text = mat.text if mat is not None else ''
-                            
-                            # Skip empty choices
-                            if choice_text and choice_text.strip():
-                                question['choices'].append({
-                                    'id': choice_id,
-                                    'text': choice_text
-                                })
+                            for label in labels:
+                                choice_id = label.get('ident')
+                                
+                                # Find material in label
+                                mat = label.find('.//qti:material/qti:mattext', self.NS)
+                                if mat is None:
+                                    mat = label.find('.//material/mattext')
+                                    
+                                choice_text = mat.text if mat is not None else ''
+                                
+                                # Skip empty choices
+                                if choice_text and choice_text.strip():
+                                    question['choices'].append({
+                                        'id': choice_id,
+                                        'text': choice_text
+                                    })
         
         # Parse correct answers from resprocessing - try with namespace
         resprocessing = item.find('.//qti:resprocessing', self.NS)
@@ -267,8 +277,10 @@ class QTIParser:
             resprocessing = item.find('.//resprocessing')
             
         if resprocessing is not None:
-            if question['type'] == 'numerical':
+            if question_type == 'numerical':
                 self._parse_numerical_answers(resprocessing, question)
+            elif question_type in ['matching_question', 'multiple_dropdowns_question', 'fill_in_multiple_blanks_question']:
+                self._parse_multi_response_answers(resprocessing, question)
             else:
                 question['correct_answers'] = self._parse_correct_answers(resprocessing)
         
@@ -298,7 +310,175 @@ class QTIParser:
                         except ValueError:
                             pass
         
+        # For text_only questions, always return (they have no question text requirement)
+        if question_type == 'text_only_question':
+            return question
+        
         return question if question['question_text'] else None
+    
+    def _parse_multi_response_item(self, presentation: ET.Element, question: Dict):
+        """Parse matching, multiple dropdowns, and fill-in-multiple-blanks questions"""
+        # These have multiple response_lid elements, one per blank/match
+        response_lids = presentation.findall('.//qti:response_lid', self.NS)
+        if not response_lids:
+            response_lids = presentation.findall('.//response_lid')
+        
+        for response_lid in response_lids:
+            blank_id = response_lid.get('ident', '')
+            
+            # Get the prompt/label for this blank
+            material = response_lid.find('.//qti:material', self.NS)
+            if material is None:
+                material = response_lid.find('.//material')
+            
+            prompt = ''
+            if material is not None:
+                mattext = material.find('.//qti:mattext', self.NS)
+                if mattext is None:
+                    mattext = material.find('.//mattext')
+                if mattext is not None:
+                    prompt = mattext.text or ''
+            
+            # Get choices for this blank
+            choices = []
+            render_choice = response_lid.find('.//qti:render_choice', self.NS)
+            if render_choice is None:
+                render_choice = response_lid.find('.//render_choice')
+            
+            if render_choice is not None:
+                labels = render_choice.findall('.//qti:response_label', self.NS)
+                if not labels:
+                    labels = render_choice.findall('.//response_label')
+                
+                for label in labels:
+                    choice_id = label.get('ident')
+                    mat = label.find('.//qti:material/qti:mattext', self.NS)
+                    if mat is None:
+                        mat = label.find('.//material/mattext')
+                    choice_text = mat.text if mat is not None else ''
+                    
+                    if choice_text and choice_text.strip():
+                        choices.append({
+                            'id': choice_id,
+                            'text': choice_text
+                        })
+            
+            question['blanks'].append({
+                'blank_id': blank_id,
+                'prompt': prompt,
+                'choices': choices,
+                'correct_answer': None  # Will be filled by _parse_multi_response_answers
+            })
+    
+    def _parse_multi_response_answers(self, resprocessing: ET.Element, question: Dict):
+        """Parse correct answers for matching/dropdown/fill-in-multiple-blanks"""
+        respconditions = resprocessing.findall('.//qti:respcondition', self.NS)
+        if not respconditions:
+            respconditions = resprocessing.findall('.//respcondition')
+        
+        for respcondition in respconditions:
+            conditionvar = respcondition.find('.//qti:conditionvar', self.NS)
+            if conditionvar is None:
+                conditionvar = respcondition.find('.//conditionvar')
+            
+            if conditionvar is not None:
+                vareq_list = conditionvar.findall('.//qti:varequal', self.NS)
+                if not vareq_list:
+                    vareq_list = conditionvar.findall('.//varequal')
+                
+                for varequal in vareq_list:
+                    resp_ident = varequal.get('respident', '')
+                    correct_id = varequal.text
+                    
+                    # Match to the corresponding blank
+                    for blank in question['blanks']:
+                        if blank['blank_id'] == resp_ident:
+                            blank['correct_answer'] = correct_id
+                            break
+    
+    def _parse_calculated_item(self, item: ET.Element, question: Dict):
+        """Parse calculated/formula question"""
+        # Look for itemproc_extension with calculated data
+        itemproc = item.find('.//qti:itemproc_extension', self.NS)
+        if itemproc is None:
+            itemproc = item.find('.//itemproc_extension')
+        
+        if itemproc is not None:
+            calculated = itemproc.find('.//qti:calculated', self.NS)
+            if calculated is None:
+                calculated = itemproc.find('.//calculated')
+            
+            if calculated is not None:
+                # Get tolerance
+                tolerance = calculated.find('.//qti:answer_tolerance', self.NS)
+                if tolerance is None:
+                    tolerance = calculated.find('.//answer_tolerance')
+                if tolerance is not None and tolerance.text:
+                    try:
+                        question['answer_tolerance'] = float(tolerance.text)
+                    except ValueError:
+                        pass
+                
+                # Get formula
+                formula = calculated.find('.//qti:formula', self.NS)
+                if formula is None:
+                    formula = calculated.find('.//formula')
+                if formula is not None:
+                    question['formula'] = formula.text
+                
+                # Get variables
+                vars_elem = calculated.find('.//qti:vars', self.NS)
+                if vars_elem is None:
+                    vars_elem = calculated.find('.//vars')
+                
+                if vars_elem is not None:
+                    var_elems = vars_elem.findall('.//qti:var', self.NS)
+                    if not var_elems:
+                        var_elems = vars_elem.findall('.//var')
+                    
+                    for var_elem in var_elems:
+                        var_name = var_elem.get('name')
+                        min_elem = var_elem.find('.//qti:min', self.NS)
+                        if min_elem is None:
+                            min_elem = var_elem.find('.//min')
+                        max_elem = var_elem.find('.//qti:max', self.NS)
+                        if max_elem is None:
+                            max_elem = var_elem.find('.//max')
+                        
+                        var_data = {'name': var_name}
+                        if min_elem is not None and min_elem.text:
+                            var_data['min'] = float(min_elem.text)
+                        if max_elem is not None and max_elem.text:
+                            var_data['max'] = float(max_elem.text)
+                        
+                        question['variables'].append(var_data)
+                
+                # Get a sample answer from var_sets
+                var_sets = calculated.find('.//qti:var_sets', self.NS)
+                if var_sets is None:
+                    var_sets = calculated.find('.//var_sets')
+                
+                if var_sets is not None:
+                    var_set = var_sets.find('.//qti:var_set', self.NS)
+                    if var_set is None:
+                        var_set = var_sets.find('.//var_set')
+                    
+                    if var_set is not None:
+                        answer = var_set.find('.//qti:answer', self.NS)
+                        if answer is None:
+                            answer = var_set.find('.//answer')
+                        if answer is not None and answer.text:
+                            question['correct_answers'] = [answer.text]
+                        
+                        # Get the variable values for this set
+                        question['sample_vars'] = {}
+                        var_vals = var_set.findall('.//qti:var', self.NS)
+                        if not var_vals:
+                            var_vals = var_set.findall('.//var')
+                        for var_val in var_vals:
+                            var_name = var_val.get('name')
+                            if var_name and var_val.text:
+                                question['sample_vars'][var_name] = var_val.text
     
     def _get_question_type(self, item: ET.Element) -> str:
         """Determine question type from metadata"""
@@ -339,11 +519,22 @@ class QTIParser:
                             return 'numerical'
                     elif label.text == 'question_type':
                         qtype = entry.text or 'unknown'
-                        if qtype == 'numerical_question':
-                            return 'numerical'
-                        elif qtype == 'short_answer_question':
-                            return 'short_answer'
-                        return qtype
+                        # Map Canvas question types to our internal types
+                        type_mapping = {
+                            'numerical_question': 'numerical',
+                            'short_answer_question': 'short_answer',
+                            'multiple_choice_question': 'multiple_choice',
+                            'true_false_question': 'true_false',
+                            'multiple_answers_question': 'multiple_response',
+                            'essay_question': 'essay',
+                            'matching_question': 'matching_question',
+                            'fill_in_multiple_blanks_question': 'fill_in_multiple_blanks_question',
+                            'multiple_dropdowns_question': 'multiple_dropdowns_question',
+                            'calculated_question': 'calculated_question',
+                            'file_upload_question': 'file_upload_question',
+                            'text_only_question': 'text_only_question',
+                        }
+                        return type_mapping.get(qtype, qtype)
         
         return 'unknown'
     

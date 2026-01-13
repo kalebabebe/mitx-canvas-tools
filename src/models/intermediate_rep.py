@@ -76,6 +76,9 @@ class CourseIR:
     assignment_groups: List[Dict[str, Any]] = field(default_factory=list)
     group_weighting_scheme: str = ""  # 'percent' for weighted grading
     
+    # Front page content for updates.html
+    front_page_content: Optional[str] = None
+    
     # Unsupported/special items
     lti_tools: List[Dict[str, Any]] = field(default_factory=list)
     unsupported_items: List[Dict[str, Any]] = field(default_factory=list)

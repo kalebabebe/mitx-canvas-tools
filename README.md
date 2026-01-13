@@ -1,115 +1,106 @@
-# Canvas to Open edX Converter
+# MITx Canvas Tools
 
-Convert Canvas LMS courses to Open edX format.
+Converts Canvas LMS course exports (.imscc) to Open edX OLX format for import into MITx.
 
-## Quick Start
+## Installation
 
 ```bash
 pip install -r requirements.txt
-python -m src.converter course.imscc output_dir
 ```
 
-## Features
-
-- ✅ Course structure (modules → chapters)
-- ✅ Wiki pages with asset URL conversion
-- ✅ Quizzes with 5 question types
-- ✅ Question banks (loads from separate files)
-- ✅ Multiple acceptable answers (short answer)
-- ✅ Asset copying to /static/
-- ✅ Unsupported content report (LTI tools, etc.)
-- ✅ Clean, emoji-free output
-
-## Supported Question Types
-
-| Type | Canvas | Open edX |
-|------|--------|----------|
-| Multiple Choice | `cc.multiple_choice.v0p1` | `<multiplechoiceresponse>` |
-| True/False | `cc.true_false.v0p1` | `<multiplechoiceresponse>` |
-| Multiple Response | `cc.multiple_response.v0p1` | `<choiceresponse>` |
-| Short Answer | `cc.fib.v0p1` | `<stringresponse>` |
-| Numerical | `numerical_question` | `<numericalresponse>` |
-
 ## Usage
+
+### Command Line
+```bash
+python -m src.converter course.imscc output_dir
+```
 
 ### Python API
 ```python
 from src.converter import convert_canvas_to_openedx
 
 report = convert_canvas_to_openedx('course.imscc', 'output_dir', verbose=True)
-
-# Check results
-print(f"Chapters: {report['statistics']['chapters']}")
-print(f"Components: {report['statistics']['components']}")
-print(f"Assets: {report['statistics']['assets']}")
-print(f"Skipped: {report['skipped']}")
+print(report)
 ```
 
 ### Web Interface
 ```bash
-python app.py  # http://localhost:5000
+python app.py  # runs on http://localhost:5000
 ```
 
-## New Features
+## What Gets Converted
 
-### Question Banks
-Automatically loads questions from Canvas question bank files (`non_cc_assessments/*.qti`).
+### Course Structure
+- Canvas modules → OLX chapters/sequentials
+- Wiki pages → HTML components with asset URL conversion
+- Assignments → HTML components with metadata
+- Quizzes → Problem components (see supported types below)
 
-### Multiple Answers
-Short answer questions support multiple acceptable answers:
-```xml
-<stringresponse answer="red" type="ci">
-  <additional_answer answer="blue"/>
-  <additional_answer answer="yellow"/>
-</stringresponse>
-```
+### Media & Assets
+- Files copied to `/static/`
+- Image URLs rewritten from `$IMS-CC-FILEBASE$` to `/static/`
+- Panopto LTI embeds converted to direct embed iframes
 
-### Unsupported Content Report
-Creates "Import Notes" chapter listing all LTI tools and unsupported items that need manual setup.
+### Navigation
+- Canvas front page (`<meta name="front_page">`) → `info/updates.html`
+- Internal wiki links converted to `/jump_to_id/` where possible
 
-### Validation Report
-```python
-{
-  'statistics': {'chapters': 10, 'components': 61, 'assets': 48},
-  'skipped': {'LTI Tool': 2}
-}
-```
+### Quiz Question Types
+
+| Canvas Type | OLX Output |
+|-------------|------------|
+| Multiple Choice | `<multiplechoiceresponse>` |
+| True/False | `<multiplechoiceresponse>` |
+| Multiple Response | `<choiceresponse>` |
+| Short Answer | `<stringresponse>` (supports multiple accepted answers) |
+| Numerical | `<numericalresponse>` |
+| Essay | Open Response Assessment (ORA) with staff grading |
+| Matching | `<optionresponse>` (dropdown format) |
+| Fill in Multiple Blanks | `<optionresponse>` |
+| Multiple Dropdowns | `<optionresponse>` |
+| Calculated | `<numericalresponse>` (static, using sample values) |
+| File Upload | Placeholder HTML with instructions |
+| Text Only | HTML component |
+
+Question banks from `non_cc_assessments/*.qti` are automatically included.
+
+## What Requires Manual Setup
+
+The converter creates an "Import Notes" chapter listing content that couldn't be automatically converted:
+
+- LTI tool integrations (Gradescope, Perusall, etc.)
+- External URLs
+- Some question types may need review after import
 
 ## Output Structure
 
 ```
 output_dir/
 ├── course.xml
-├── chapter/*.xml
-├── sequential/*.xml
-├── vertical/*.xml
-├── html/*.xml + *.html
-├── problem/*.xml
-├── static/              # Assets from Canvas
-└── Import Notes/        # Unsupported content report
+├── course/
+├── chapter/
+├── sequential/
+├── vertical/
+├── html/
+├── problem/
+├── openassessment/
+├── static/
+├── policies/
+├── about/
+└── info/
+    └── updates.html    # Canvas front page content
 ```
 
 ## Deployment
 
-### Heroku
-```bash
-heroku create app-name
-git push heroku main
-```
+Currently deployed on PythonAnywhere. To update:
 
-### Local
-```bash
-python app.py
-```
-
-## Limitations
-
-- Essay questions (manual grading note)
-- Some Canvas-specific features
+1. Upload new code to `~/mitx-canvas-tools-main/`
+2. Reload the web app from the Web tab
 
 ## Requirements
 
-- Python 3.11+
-- beautifulsoup4, lxml, Flask
+- Python 3.10+
+- beautifulsoup4, lxml, Flask, Werkzeug
 
-See `requirements.txt` for complete list.
+See `requirements.txt` for versions.

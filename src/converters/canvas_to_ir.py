@@ -30,6 +30,7 @@ class CanvasToIRConverter:
         self.asset_manager = None  # Set during convert()
         self.skipped_items = []  # Track unsupported content
         self.assignment_groups = {}  # Map identifier to group info
+        self.identifier_to_url_name = {}  # Map Canvas identifiers to OLX url_names
     
     def convert(self, canvas_data: Dict, canvas_parser) -> CourseIR:
         """
@@ -49,6 +50,13 @@ class CanvasToIRConverter:
         for group in canvas_data.get('assignment_groups', []):
             self.assignment_groups[group['identifier']] = group
         
+        # Build identifier to url_name map for internal link conversion
+        self._build_identifier_map(canvas_data['modules'])
+        
+        # Pass the map to asset manager if available
+        if self.asset_manager:
+            self.asset_manager.identifier_to_url_name = self.identifier_to_url_name
+        
         # Extract course metadata
         org, course, run = self._extract_course_id(canvas_data)
         
@@ -66,6 +74,17 @@ class CanvasToIRConverter:
         # Store assignment groups for grading policy generation
         course_ir.assignment_groups = canvas_data.get('assignment_groups', [])
         course_ir.group_weighting_scheme = canvas_data.get('group_weighting_scheme', '')
+        
+        # Get front page content for updates.html
+        front_page_result = canvas_parser.get_front_page()
+        if front_page_result:
+            front_page_identifier, front_page_content = front_page_result
+            # Convert URLs in front page content
+            if self.asset_manager:
+                front_page_content = self.asset_manager.convert_html_urls(front_page_content)
+            course_ir.front_page_content = front_page_content
+            if self.verbose:
+                print("    Found front page for updates.html")
         
         # Build prerequisite map
         prereq_map = self._build_prerequisite_map(canvas_data['modules'])
@@ -88,6 +107,18 @@ class CanvasToIRConverter:
             course_ir.chapters.append(notes_chapter)
         
         return course_ir
+    
+    def _build_identifier_map(self, modules: List[Dict]):
+        """Build map of Canvas identifiers to OLX url_names for internal link conversion"""
+        self.identifier_to_url_name = {}
+        
+        for module in modules:
+            for item in module.get('items', []):
+                identifier = item.get('identifierref')
+                if identifier:
+                    # Generate the url_name that will be used for this item
+                    url_name = self.url_gen.generate(item['title'])
+                    self.identifier_to_url_name[identifier] = url_name
     
     def _extract_course_id(self, canvas_data: Dict) -> tuple:
         """Extract org, course, run from Canvas data"""
@@ -371,15 +402,15 @@ class CanvasToIRConverter:
         components = []
         
         for i, question in enumerate(quiz_data['questions'], 1):
-            # Convert to CAPA
-            capa_xml = self.capa_converter.convert_question(question)
+            # Convert to CAPA/ORA/HTML - returns (content, component_type)
+            content, component_type = self.capa_converter.convert_question(question)
             
-            # Create problem component
+            # Create component with appropriate type
             component = ComponentIR(
-                type='problem',
+                type=component_type,
                 display_name=question.get('title') or f"Question {i}",
                 url_name=self.url_gen.generate(f"{item['title']}_q{i}"),
-                content=capa_xml,
+                content=content,
                 canvas_source=item
             )
             components.append(component)
