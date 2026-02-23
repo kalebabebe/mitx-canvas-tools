@@ -56,11 +56,16 @@ def convert():
     if not file.filename.endswith(('.imscc', '.zip')):
         return jsonify({'error': 'File must be .imscc or .zip'}), 400
     
+    report = None
+    step = 'initializing'
+
     try:
         # Clean up old files before starting to free disk space
+        step = 'cleaning up old files'
         cleanup_tmp_folders()
 
         # Save uploaded file
+        step = 'saving uploaded file'
         filename = secure_filename(file.filename)
         upload_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         file.save(upload_path)
@@ -74,21 +79,29 @@ def convert():
             shutil.rmtree(output_path)
 
         # Convert
+        step = 'converting course'
         report = convert_canvas_to_openedx(upload_path, output_path, verbose=False)
+
+        # Free disk space BEFORE creating the tarball:
+        step = 'creating download archive'
+        if os.path.exists(upload_path):
+            os.remove(upload_path)
+        # Force cleanup of the converter's temp extraction directory
+        import gc
+        gc.collect()
 
         # Create tar.gz of output using streaming to keep memory low
         zip_name = output_name + '.tar.gz'
         zip_path = os.path.join(app.config['OUTPUT_FOLDER'], zip_name)
 
-        with tarfile.open(zip_path, 'w:gz') as tar:
+        with tarfile.open(zip_path, 'w:gz', compresslevel=6) as tar:
             for root, dirs, files in os.walk(output_path):
                 for f in files:
                     full_path = os.path.join(root, f)
                     arcname = os.path.relpath(full_path, output_path)
                     tar.add(full_path, arcname=arcname)
 
-        # Cleanup: remove upload and uncompressed OLX directory to save space
-        os.remove(upload_path)
+        # Cleanup: remove uncompressed OLX directory
         shutil.rmtree(output_path, ignore_errors=True)
 
         return jsonify({
@@ -98,7 +111,19 @@ def convert():
         })
 
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        import traceback
+        error_detail = {
+            'error': f'Conversion failed during: {step}',
+            'detail': str(e),
+            'type': type(e).__name__,
+        }
+
+        # Include partial report if conversion got far enough
+        if report:
+            error_detail['partial_report'] = report
+
+        app.logger.error(f"Conversion failed at step '{step}': {traceback.format_exc()}")
+        return jsonify(error_detail), 500
 
 @app.route('/download/<filename>')
 def download(filename):

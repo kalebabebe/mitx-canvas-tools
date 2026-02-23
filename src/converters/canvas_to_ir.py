@@ -29,8 +29,10 @@ class CanvasToIRConverter:
         self.capa_converter = QTIToCapaConverter(verbose=verbose)
         self.asset_manager = None  # Set during convert()
         self.skipped_items = []  # Track unsupported content
+        self.timed_quizzes = []  # Track quizzes with time limits
         self.assignment_groups = {}  # Map identifier to group info
         self.identifier_to_url_name = {}  # Map Canvas identifiers to OLX url_names
+        self.item_id_to_url_name = {}  # Map item identifier to url_name (avoids double-generation)
     
     def convert(self, canvas_data: Dict, canvas_parser) -> CourseIR:
         """
@@ -109,16 +111,24 @@ class CanvasToIRConverter:
         return course_ir
     
     def _build_identifier_map(self, modules: List[Dict]):
-        """Build map of Canvas identifiers to OLX url_names for internal link conversion"""
+        """Build map of Canvas identifiers to OLX url_names for internal link conversion.
+
+        Also stores item identifier → url_name so that _convert_item_to_vertical
+        can reuse the same url_name instead of generating a new (colliding) one.
+        """
         self.identifier_to_url_name = {}
-        
+        self.item_id_to_url_name = {}
+
         for module in modules:
             for item in module.get('items', []):
-                identifier = item.get('identifierref')
-                if identifier:
-                    # Generate the url_name that will be used for this item
+                identifierref = item.get('identifierref')
+                item_id = item.get('identifier')
+                if identifierref:
+                    # Generate the url_name once — reused later during conversion
                     url_name = self.url_gen.generate(item['title'])
-                    self.identifier_to_url_name[identifier] = url_name
+                    self.identifier_to_url_name[identifierref] = url_name
+                    if item_id:
+                        self.item_id_to_url_name[item_id] = url_name
     
     def _extract_course_id(self, canvas_data: Dict) -> tuple:
         """Extract org, course, run from Canvas data"""
@@ -240,9 +250,17 @@ class CanvasToIRConverter:
         # Check if item is published (active) or unpublished
         is_published = item['workflow_state'] == 'active'
         
+        # Reuse the url_name generated during _build_identifier_map to avoid
+        # collisions from double-generating the same title
+        item_id = item.get('identifier')
+        if item_id and item_id in self.item_id_to_url_name:
+            vert_url_name = self.item_id_to_url_name[item_id]
+        else:
+            vert_url_name = self.url_gen.generate(item['title'])
+
         vertical = VerticalIR(
             display_name=item['title'],
-            url_name=self.url_gen.generate(item['title']),
+            url_name=vert_url_name,
             published=is_published
         )
         
@@ -262,6 +280,11 @@ class CanvasToIRConverter:
             if components:
                 for component in components:
                     vertical.components.append(component)
+                # Append time limit hint to vertical title if this quiz is timed
+                # (timed_quizzes list was just appended to by _convert_quiz)
+                if self.timed_quizzes and self.timed_quizzes[-1]['title'] == item['title']:
+                    tl = self.timed_quizzes[-1]['time_limit']
+                    vertical.display_name = f"{vertical.display_name} ({tl} min time limit)"
         
         elif content_type == 'ContextExternalTool':
             # LTI tool - track as skipped
@@ -270,8 +293,32 @@ class CanvasToIRConverter:
                 'title': item['title'],
                 'url': item.get('url', 'N/A')
             })
-            pass
-        
+
+        elif content_type in ('DiscussionTopic', 'Discussion'):
+            # Discussion topics cannot be auto-converted
+            self.skipped_items.append({
+                'type': 'Discussion Topic',
+                'title': item['title'],
+                'url': item.get('url', '')
+            })
+
+        elif content_type == 'ExternalUrl':
+            # External URL links
+            self.skipped_items.append({
+                'type': 'External URL',
+                'title': item['title'],
+                'url': item.get('url', 'N/A')
+            })
+
+        else:
+            # Any other unrecognized content type
+            if content_type and content_type not in ('WikiPage', 'Assignment', 'Quizzes::Quiz'):
+                self.skipped_items.append({
+                    'type': content_type,
+                    'title': item['title'],
+                    'url': item.get('url', '')
+                })
+
         return vertical if vertical.components else None
     
     def _convert_wiki_page(
@@ -591,10 +638,22 @@ class CanvasToIRConverter:
                 if self.verbose:
                     print(f"     WARNING: Failed to convert question {i} in '{item['title']}': {e}")
 
+        # Track timed quizzes for the conversion report
+        time_limit = quiz_settings.get('time_limit')
+        if time_limit and time_limit > 0:
+            self.timed_quizzes.append({
+                'title': item['title'],
+                'time_limit': time_limit,
+                'quiz_type': quiz_settings.get('quiz_type', 'assignment'),
+                'questions': len(components),
+            })
+
         if self.verbose:
             msg = f"    Converted quiz '{item['title']}': {len(components)} questions"
             if failed_questions:
                 msg += f" ({failed_questions} failed)"
+            if time_limit:
+                msg += f" (time limit: {time_limit} min)"
             print(msg)
 
         return components

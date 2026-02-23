@@ -125,11 +125,70 @@
             font-weight: 600;
             color: #333;
             margin-bottom: 16px;
+            font-size: 16px;
         }
         .result-stats {
             color: #666;
             font-size: 14px;
             line-height: 1.6;
+        }
+        .report-section {
+            margin-top: 16px;
+            padding-top: 16px;
+            border-top: 1px solid #d0e4ff;
+        }
+        .report-section h4 {
+            color: #333;
+            font-size: 13px;
+            font-weight: 600;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .report-section ul {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+        .report-section li {
+            padding: 6px 0;
+            font-size: 13px;
+            color: #555;
+            border-bottom: 1px solid #e8f0fe;
+        }
+        .report-section li:last-child {
+            border-bottom: none;
+        }
+        .report-section .item-type {
+            display: inline-block;
+            background: #e0e0e0;
+            color: #555;
+            padding: 1px 8px;
+            border-radius: 3px;
+            font-size: 11px;
+            font-weight: 500;
+            margin-right: 6px;
+        }
+        .report-section .action-note {
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            padding: 10px 12px;
+            border-radius: 5px;
+            font-size: 13px;
+            color: #664d03;
+            margin-top: 8px;
+        }
+        .stat-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+        .stat-item {
+            font-size: 13px;
+            color: #555;
+        }
+        .stat-item strong {
+            color: #333;
         }
         .download-btn {
             margin-top: 16px;
@@ -314,13 +373,72 @@
 
             const report = result.report || result;
             const stats = report.statistics;
-            resultStats.innerHTML = `
-                <strong>${report.course_title}</strong><br>
-                Chapters: ${stats.chapters}<br>
-                Components: ${stats.components}<br>
-                Assets: ${stats.assets || 0}
-            `;
 
+            let html = `<strong>${report.course_title}</strong>`;
+            if (report.course_id) {
+                html += `<br><span style="font-size:12px;color:#888;">${report.course_id}</span>`;
+            }
+
+            // Statistics grid
+            html += `<div class="report-section">
+                <h4>Conversion Statistics</h4>
+                <div class="stat-grid">
+                    <div class="stat-item"><strong>${stats.chapters}</strong> Chapters</div>
+                    <div class="stat-item"><strong>${stats.sequentials || '—'}</strong> Subsections</div>
+                    <div class="stat-item"><strong>${stats.verticals || '—'}</strong> Units</div>
+                    <div class="stat-item"><strong>${stats.components}</strong> Components</div>
+                    <div class="stat-item"><strong>${stats.assets || 0}</strong> Assets copied</div>
+                </div>
+            </div>`;
+
+            // Timed quizzes
+            const timedQuizzes = report.timed_quizzes || [];
+            if (timedQuizzes.length > 0) {
+                html += `<div class="report-section">
+                    <h4>Timed Quizzes</h4>
+                    <ul>`;
+                for (const q of timedQuizzes) {
+                    html += `<li><strong>${q.title}</strong> &mdash; ${q.time_limit} min, ${q.questions} questions</li>`;
+                }
+                html += `</ul>
+                    <div class="action-note">
+                        These quizzes had time limits in Canvas. To enforce time limits in Open edX, go to Studio &rarr; subsection settings &rarr; enable "Timed Examination" for each subsection above.
+                    </div>
+                </div>`;
+            }
+
+            // Skipped items
+            const skippedItems = report.skipped_items || [];
+            if (skippedItems.length > 0) {
+                // Group by type
+                const byType = {};
+                for (const item of skippedItems) {
+                    if (!byType[item.type]) byType[item.type] = [];
+                    byType[item.type].push(item);
+                }
+                html += `<div class="report-section">
+                    <h4>Skipped Items (${skippedItems.length})</h4>
+                    <ul>`;
+                for (const [type, items] of Object.entries(byType).sort()) {
+                    for (const item of items) {
+                        html += `<li><span class="item-type">${type}</span> ${item.title}</li>`;
+                    }
+                }
+                html += `</ul>
+                    <div class="action-note">
+                        These items could not be auto-converted. Recreate them manually in Open edX Studio. An "Import Notes" chapter has been added to the course with details.
+                    </div>
+                </div>`;
+            }
+
+            // No issues - clean conversion
+            if (timedQuizzes.length === 0 && skippedItems.length === 0) {
+                html += `<div class="report-section" style="color:#28a745;">
+                    All content converted successfully — no items were skipped.
+                </div>`;
+            }
+
+            resultStats.innerHTML = html;
             downloadBtn.href = result.download_url || '/download';
         }
 

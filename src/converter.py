@@ -78,13 +78,17 @@ class CanvasToOpenEdXConverter:
             # Step 4: Generate OLX
             if self.verbose:
                 print("\nStep 4: Generating Open edX OLX...")
-            
+
             olx_gen = OLXGenerator(output_dir, verbose=self.verbose)
             olx_gen.generate(course_ir)
-            
+
             # Step 5: Generate report
             report = self._generate_report(canvas_data, course_ir, output_dir, asset_count)
-        
+
+            # Step 6: Eagerly clean up extracted IMSCC temp directory to free disk
+            # before the tarball is created back in app.py
+            parser.cleanup()
+
         if self.verbose:
             print("\n" + "=" * 60)
             print("Conversion Complete")
@@ -133,6 +137,8 @@ class CanvasToOpenEdXConverter:
                 'assets': asset_count
             },
             'skipped': skipped_by_type,
+            'skipped_items': self.ir_converter.skipped_items,
+            'timed_quizzes': self.ir_converter.timed_quizzes,
             'output_directory': output_dir
         }
         
