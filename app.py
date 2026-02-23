@@ -14,13 +14,28 @@ import shutil
 from src.converter import convert_canvas_to_openedx
 
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB max file size
+app.config['MAX_CONTENT_LENGTH'] = 200 * 1024 * 1024  # 200MB max file size
 app.config['UPLOAD_FOLDER'] = '/tmp/uploads'
 app.config['OUTPUT_FOLDER'] = '/tmp/outputs'
 
 # Ensure directories exist
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs(app.config['OUTPUT_FOLDER'], exist_ok=True)
+
+
+def cleanup_tmp_folders():
+    """
+    Clear old files from /tmp/uploads and /tmp/outputs to prevent
+    disk space exhaustion on PythonAnywhere or other constrained hosts.
+    Recreates the directories after clearing.
+    """
+    for folder in [app.config['UPLOAD_FOLDER'], app.config['OUTPUT_FOLDER']]:
+        try:
+            if os.path.exists(folder):
+                shutil.rmtree(folder)
+            os.makedirs(folder, exist_ok=True)
+        except OSError as e:
+            app.logger.warning(f"Could not clean {folder}: {e}")
 
 @app.route('/')
 def index():
@@ -41,42 +56,46 @@ def convert():
         return jsonify({'error': 'File must be .imscc or .zip'}), 400
     
     try:
+        # Clean up old files before starting to free disk space
+        cleanup_tmp_folders()
+
         # Save uploaded file
         filename = secure_filename(file.filename)
         upload_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         file.save(upload_path)
-        
+
         # Create output directory
         output_name = Path(filename).stem + '_olx'
         output_path = os.path.join(app.config['OUTPUT_FOLDER'], output_name)
-        
+
         # Remove old output if exists
         if os.path.exists(output_path):
             shutil.rmtree(output_path)
-        
+
         # Convert
         report = convert_canvas_to_openedx(upload_path, output_path, verbose=False)
-        
-        # Create zip of output
+
+        # Create tar.gz of output
         zip_name = output_name + '.tar.gz'
         zip_path = os.path.join(app.config['OUTPUT_FOLDER'], zip_name)
-        
+
         # Create tarball
         shutil.make_archive(
             zip_path.replace('.tar.gz', ''),
             'gztar',
             output_path
         )
-        
-        # Cleanup upload
+
+        # Cleanup: remove upload and uncompressed OLX directory to save space
         os.remove(upload_path)
-        
+        shutil.rmtree(output_path, ignore_errors=True)
+
         return jsonify({
             'success': True,
             'report': report,
             'download_url': f'/download/{zip_name}'
         })
-        
+
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
