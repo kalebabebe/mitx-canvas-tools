@@ -4,6 +4,7 @@ Simple upload/convert/download interface
 """
 
 import os
+import tarfile
 import tempfile
 import zipfile
 from pathlib import Path
@@ -75,16 +76,16 @@ def convert():
         # Convert
         report = convert_canvas_to_openedx(upload_path, output_path, verbose=False)
 
-        # Create tar.gz of output
+        # Create tar.gz of output using streaming to keep memory low
         zip_name = output_name + '.tar.gz'
         zip_path = os.path.join(app.config['OUTPUT_FOLDER'], zip_name)
 
-        # Create tarball
-        shutil.make_archive(
-            zip_path.replace('.tar.gz', ''),
-            'gztar',
-            output_path
-        )
+        with tarfile.open(zip_path, 'w:gz') as tar:
+            for root, dirs, files in os.walk(output_path):
+                for f in files:
+                    full_path = os.path.join(root, f)
+                    arcname = os.path.relpath(full_path, output_path)
+                    tar.add(full_path, arcname=arcname)
 
         # Cleanup: remove upload and uncompressed OLX directory to save space
         os.remove(upload_path)
