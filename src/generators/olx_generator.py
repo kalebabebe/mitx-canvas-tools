@@ -40,8 +40,17 @@ class OLXGenerator:
         self._generate_course_definition(course_ir)
         
         # Generate chapters
+        failed_chapters = []
         for chapter in course_ir.chapters:
-            self._generate_chapter(chapter)
+            try:
+                self._generate_chapter(chapter)
+            except Exception as e:
+                failed_chapters.append(chapter.url_name)
+                if self.verbose:
+                    print(f"    WARNING: Failed to generate chapter '{chapter.display_name}': {e}")
+
+        # Validate: check that all referenced chapter files exist
+        self._validate_chapter_files(course_ir, failed_chapters)
         
         # Generate policies
         self._generate_policies(course_ir)
@@ -167,25 +176,29 @@ class OLXGenerator:
     
     def _generate_vertical(self, vertical: VerticalIR):
         """Generate vertical XML file"""
-        
+
         vert_elem = ET.Element('vertical')
         vert_elem.set('display_name', vertical.display_name)
-        
+
         # Handle unpublished verticals
         if not vertical.published:
             vert_elem.set('visible_to_staff_only', 'true')
-        
-        # Add components
+
+        # Add components - continue even if individual components fail
         for component in vertical.components:
-            self._generate_component(component)
-            
-            comp_ref = ET.SubElement(vert_elem, component.type)
-            comp_ref.set('url_name', component.url_name)
-        
+            try:
+                self._generate_component(component)
+
+                comp_ref = ET.SubElement(vert_elem, component.type)
+                comp_ref.set('url_name', component.url_name)
+            except Exception as e:
+                if self.verbose:
+                    print(f"    WARNING: Failed to generate component '{component.display_name}': {e}")
+
         # Write file
         xml_str = ET.tostring(vert_elem, encoding='unicode')
         output_file = self.output_dir / 'vertical' / f'{vertical.url_name}.xml'
-        
+
         with open(output_file, 'w', encoding='utf-8') as f:
             f.write(self._prettify_xml(xml_str))
     
@@ -219,12 +232,29 @@ class OLXGenerator:
             f.write(component.content)
     
     def _generate_problem_component(self, component: ComponentIR):
-        """Generate problem component"""
-        
-        # For now, just write the XML content
+        """Generate problem component with optional settings"""
+
+        content = component.content
+
+        # Inject quiz-level settings into the <problem> tag if available
+        settings = component.settings or {}
+        if settings:
+            attrs = []
+            if settings.get('max_attempts'):
+                attrs.append(f'max_attempts="{settings["max_attempts"]}"')
+            if settings.get('showanswer'):
+                attrs.append(f'showanswer="{settings["showanswer"]}"')
+            if settings.get('weight'):
+                attrs.append(f'weight="{settings["weight"]}"')
+
+            if attrs:
+                attrs_str = ' ' + ' '.join(attrs)
+                # Insert attributes into existing <problem> tag
+                content = content.replace('<problem>', f'<problem{attrs_str}>', 1)
+
         problem_file = self.output_dir / 'problem' / f'{component.url_name}.xml'
         with open(problem_file, 'w', encoding='utf-8') as f:
-            f.write(component.content)
+            f.write(content)
     
     def _generate_ora_component(self, component: ComponentIR):
         """Generate Open Response Assessment (ORA) component"""
@@ -375,6 +405,35 @@ class OLXGenerator:
         with open(assets_file, 'w', encoding='utf-8') as f:
             f.write(assets_content)
     
+    def _validate_chapter_files(self, course_ir: CourseIR, failed_chapters: list):
+        """Validate that all chapters referenced in course definition have files"""
+        chapter_dir = self.output_dir / 'chapter'
+        missing = []
+        for chapter in course_ir.chapters:
+            chapter_file = chapter_dir / f'{chapter.url_name}.xml'
+            if not chapter_file.exists():
+                missing.append(chapter)
+
+        if missing:
+            print(f"    WARNING: {len(missing)} chapter(s) referenced in course.xml but missing files:")
+            for chapter in missing:
+                print(f"      - {chapter.display_name} ({chapter.url_name})")
+
+            # Attempt to write empty chapter files so imports don't break
+            for chapter in missing:
+                try:
+                    chapter_elem = ET.Element('chapter')
+                    chapter_elem.set('display_name', chapter.display_name)
+                    chapter_elem.set('visible_to_staff_only', 'true')
+                    # Add a note about the generation failure
+                    xml_str = ET.tostring(chapter_elem, encoding='unicode')
+                    output_file = chapter_dir / f'{chapter.url_name}.xml'
+                    with open(output_file, 'w', encoding='utf-8') as f:
+                        f.write(self._prettify_xml(xml_str))
+                    print(f"      -> Created placeholder for: {chapter.display_name}")
+                except Exception as e:
+                    print(f"      -> Failed to create placeholder: {e}")
+
     def _prettify_xml(self, xml_string: str) -> str:
         """Prettify XML string"""
         try:

@@ -315,55 +315,208 @@ class CanvasToIRConverter:
         )
     
     def _convert_assignment(
-        self, 
-        item: Dict, 
+        self,
+        item: Dict,
         canvas_parser
     ) -> Optional[ComponentIR]:
-        """Convert assignment to HTML component with full content"""
-        
+        """
+        Convert assignment to appropriate OLX component.
+
+        - online_text_entry → ORA (Open Response Assessment) with text input
+        - online_upload → ORA with file upload enabled
+        - online_text_entry,online_upload → ORA with both text and file upload
+        - none / on_paper / external_tool / not_graded → HTML info block
+        """
+
         identifier = item['identifierref']
         settings = canvas_parser.get_assignment_settings(identifier)
-        
+
         if not settings:
             if self.verbose:
                 print(f"     No settings found for assignment: {item['title']}")
             return None
-        
+
         # Get assignment metadata
         points = settings.get('points_possible', 0)
         submission_types = settings.get('submission_types', '')
         grading_type = settings.get('grading_type', '')
         html_content = settings.get('html_content', '')
-        
-        # Format submission types for display
+
+        # Convert asset URLs in the assignment content
+        if html_content and self.asset_manager:
+            html_content = self.asset_manager.convert_html_urls(html_content)
+
+        # Determine if this can be an ORA component
+        sub_types = [s.strip() for s in submission_types.split(',')] if submission_types else []
+        has_text = 'online_text_entry' in sub_types
+        has_upload = 'online_upload' in sub_types
+
+        if has_text or has_upload:
+            return self._convert_assignment_to_ora(item, settings, html_content, has_text, has_upload)
+        else:
+            return self._convert_assignment_to_html(item, settings, html_content)
+
+    def _convert_assignment_to_ora(
+        self,
+        item: Dict,
+        settings: Dict,
+        html_content: str,
+        has_text: bool,
+        has_upload: bool
+    ) -> ComponentIR:
+        """Convert assignment to ORA component for text/upload submissions"""
+        import xml.etree.ElementTree as ET
+        from xml.dom import minidom
+
+        title = item['title']
+        points = settings.get('points_possible', 0)
+        prompt_text = html_content if html_content else f'Please complete the assignment: {title}'
+
+        # Strip HTML for the prompt (ORA prompts use plain text description)
+        from bs4 import BeautifulSoup
+        prompt_plain = BeautifulSoup(prompt_text, 'html.parser').get_text(separator='\n').strip()
+
+        ora = ET.Element('openassessment')
+        ora.set('submission_start', '2001-01-01T00:00')
+        ora.set('submission_due', '2099-01-01T00:00')
+        ora.set('display_name', title)
+        ora.set('prompts_type', 'html')
+        ora.set('teams_enabled', 'False')
+        ora.set('show_rubric_during_response', 'False')
+        ora.set('allow_learner_resubmissions', 'False')
+
+        # Set response types based on submission types
+        if has_text:
+            ora.set('text_response', 'required')
+            ora.set('text_response_editor', 'text')
+        else:
+            ora.set('text_response', 'optional')
+
+        if has_upload:
+            ora.set('file_upload_response', 'required' if not has_text else 'optional')
+            ora.set('allow_multiple_files', 'True')
+        else:
+            ora.set('file_upload_response', 'none')
+
+        ora.set('allow_latex', 'False')
+
+        # Title
+        title_elem = ET.SubElement(ora, 'title')
+        title_elem.text = title
+
+        # Assessments - staff assessment only for imported assignments
+        assessments = ET.SubElement(ora, 'assessments')
+        staff = ET.SubElement(assessments, 'assessment')
+        staff.set('name', 'staff-assessment')
+        staff.set('start', '2001-01-01T00:00')
+        staff.set('due', '2099-01-01T00:00')
+        staff.set('required', 'True')
+
+        # Prompts - use HTML prompt to preserve formatting
+        prompts = ET.SubElement(ora, 'prompts')
+        prompt = ET.SubElement(prompts, 'prompt')
+        description = ET.SubElement(prompt, 'description')
+        description.text = prompt_plain
+
+        # Rubric with points based on Canvas assignment points
+        rubric = ET.SubElement(ora, 'rubric')
+        criterion = ET.SubElement(rubric, 'criterion')
+        criterion.set('feedback', 'optional')
+
+        criterion_name = ET.SubElement(criterion, 'name')
+        criterion_name.text = 'Overall Quality'
+        criterion_label = ET.SubElement(criterion, 'label')
+        criterion_label.text = 'Overall Quality'
+        criterion_prompt = ET.SubElement(criterion, 'prompt')
+        criterion_prompt.text = 'Evaluate the overall quality of the submission.'
+
+        # Scale rubric options to match Canvas point value
+        max_points = int(points) if points else 3
+        if max_points <= 0:
+            max_points = 3
+
+        # Create 4-point scale mapped to Canvas points
+        scale = [
+            (0, 'Incomplete', 'Submission does not address the requirements.'),
+            (max(1, max_points // 3), 'Developing', 'Submission partially meets requirements.'),
+            (max(2, (max_points * 2) // 3), 'Proficient', 'Submission meets requirements.'),
+            (max_points, 'Exemplary', 'Submission exceeds requirements.'),
+        ]
+
+        for pts, label, explanation in scale:
+            option = ET.SubElement(criterion, 'option')
+            option.set('points', str(pts))
+            opt_name = ET.SubElement(option, 'name')
+            opt_name.text = label
+            opt_label = ET.SubElement(option, 'label')
+            opt_label.text = label
+            opt_exp = ET.SubElement(option, 'explanation')
+            opt_exp.text = explanation
+
+        feedback_prompt = ET.SubElement(rubric, 'feedbackprompt')
+        feedback_prompt.text = '(Optional) Provide additional feedback.'
+        feedback_default = ET.SubElement(rubric, 'feedback_default_text')
+        feedback_default.text = ''
+
+        # Prettify
+        rough = ET.tostring(ora, encoding='unicode')
+        try:
+            reparsed = minidom.parseString(rough)
+            pretty = reparsed.toprettyxml(indent="  ")
+            lines = [l for l in pretty.split('\n') if l.strip() and not l.startswith('<?xml')]
+            content = '\n'.join(lines)
+        except Exception:
+            content = rough
+
+        if self.verbose:
+            sub_desc = []
+            if has_text:
+                sub_desc.append('text')
+            if has_upload:
+                sub_desc.append('file upload')
+            print(f"    Assignment '{title}' -> ORA ({', '.join(sub_desc)})")
+
+        return ComponentIR(
+            type='openassessment',
+            display_name=title,
+            url_name=self.url_gen.generate(f"{title}_assignment"),
+            content=content,
+            settings=settings,
+            canvas_source=item
+        )
+
+    def _convert_assignment_to_html(
+        self,
+        item: Dict,
+        settings: Dict,
+        html_content: str
+    ) -> ComponentIR:
+        """Convert non-submittable assignment to HTML info block"""
+        points = settings.get('points_possible', 0)
+        submission_types = settings.get('submission_types', '')
+        grading_type = settings.get('grading_type', '')
+
         submission_display = submission_types.replace(',', ', ').replace('_', ' ') if submission_types else 'Not specified'
         grading_display = grading_type.replace('_', ' ').title() if grading_type else 'Not specified'
-        
-        # Build the full HTML content
+
         content_parts = []
-        
-        # Assignment header/metadata
+
         content_parts.append(f'''<div class="assignment-info" style="background: #f5f5f5; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
     <p><strong>Assignment:</strong> {item['title']}</p>
     <p><strong>Points Possible:</strong> {points}</p>
     <p><strong>Submission Type:</strong> {submission_display}</p>
     <p><strong>Grading Type:</strong> {grading_display}</p>
 </div>''')
-        
-        # Include the actual assignment content if available
+
         if html_content:
-            # Convert asset URLs in the assignment content
-            if self.asset_manager:
-                html_content = self.asset_manager.convert_html_urls(html_content)
             content_parts.append(f'<div class="assignment-content">\n{html_content}\n</div>')
-        
-        # Add note about Canvas import
+
         content_parts.append('''<div class="assignment-note" style="background: #fff3cd; padding: 10px; border-radius: 5px; margin-top: 20px; border: 1px solid #ffc107;">
-    <p><em>Note: This assignment was imported from Canvas. Submission and grading functionality needs to be configured in Open edX.</em></p>
+    <p><em>Note: This assignment was imported from Canvas. Submission type is not online — configure grading manually in Open edX.</em></p>
 </div>''')
-        
+
         full_content = '\n'.join(content_parts)
-        
+
         return ComponentIR(
             type='html',
             display_name=item['title'],
@@ -398,28 +551,130 @@ class CanvasToIRConverter:
                 print(f"     No questions found in quiz: {item['title']}")
             return []
         
+        # Get quiz-level metadata from assessment_meta.xml
+        meta_path = canvas_parser.extract_dir / identifier / "assessment_meta.xml"
+        quiz_settings = self._parse_assessment_meta(meta_path)
+
         # Convert each question to a component
         components = []
-        
+        failed_questions = 0
+
         for i, question in enumerate(quiz_data['questions'], 1):
-            # Convert to CAPA/ORA/HTML - returns (content, component_type)
-            content, component_type = self.capa_converter.convert_question(question)
-            
-            # Create component with appropriate type
-            component = ComponentIR(
-                type=component_type,
-                display_name=question.get('title') or f"Question {i}",
-                url_name=self.url_gen.generate(f"{item['title']}_q{i}"),
-                content=content,
-                canvas_source=item
-            )
-            components.append(component)
-        
+            try:
+                # Convert to CAPA/ORA/HTML - returns (content, component_type)
+                content, component_type = self.capa_converter.convert_question(question)
+
+                # Apply quiz-level settings to problem components
+                settings = {}
+                if component_type == 'problem' and quiz_settings:
+                    if quiz_settings.get('max_attempts'):
+                        settings['max_attempts'] = quiz_settings['max_attempts']
+                    if quiz_settings.get('show_correct_answers'):
+                        settings['showanswer'] = 'finished'
+                    else:
+                        settings['showanswer'] = 'never'
+                    if question.get('points'):
+                        settings['weight'] = question['points']
+
+                # Create component with appropriate type
+                component = ComponentIR(
+                    type=component_type,
+                    display_name=question.get('title') or f"Question {i}",
+                    url_name=self.url_gen.generate(f"{item['title']}_q{i}"),
+                    content=content,
+                    settings=settings,
+                    canvas_source=item
+                )
+                components.append(component)
+            except Exception as e:
+                failed_questions += 1
+                if self.verbose:
+                    print(f"     WARNING: Failed to convert question {i} in '{item['title']}': {e}")
+
         if self.verbose:
-            print(f"    Converted quiz '{item['title']}': {len(components)} questions")
-        
+            msg = f"    Converted quiz '{item['title']}': {len(components)} questions"
+            if failed_questions:
+                msg += f" ({failed_questions} failed)"
+            print(msg)
+
         return components
     
+    def _parse_assessment_meta(self, meta_path) -> Dict:
+        """Parse assessment_meta.xml for quiz-level settings"""
+        from pathlib import Path
+        meta_path = Path(meta_path)
+
+        if not meta_path.exists():
+            return {}
+
+        try:
+            import xml.etree.ElementTree as ET
+            tree = ET.parse(meta_path)
+            root = tree.getroot()
+
+            ns = {'cc': 'http://canvas.instructure.com/xsd/cccv1p0'}
+
+            def get_text(tag):
+                for prefix, uri in ns.items():
+                    child = root.find(f'{{{uri}}}{tag}')
+                    if child is not None and child.text:
+                        return child.text
+                child = root.find(tag)
+                return child.text if child is not None and child.text else ''
+
+            settings = {}
+
+            # Time limit (Canvas stores in minutes)
+            time_limit = get_text('time_limit')
+            if time_limit:
+                try:
+                    settings['time_limit'] = int(float(time_limit))
+                except (ValueError, TypeError):
+                    pass
+
+            # Allowed attempts
+            allowed_attempts = get_text('allowed_attempts')
+            if allowed_attempts:
+                try:
+                    attempts = int(allowed_attempts)
+                    # Canvas uses -1 for unlimited
+                    if attempts > 0:
+                        settings['max_attempts'] = attempts
+                except (ValueError, TypeError):
+                    pass
+
+            # Scoring policy (keep_highest, keep_latest, keep_average)
+            scoring_policy = get_text('scoring_policy')
+            if scoring_policy:
+                settings['scoring_policy'] = scoring_policy
+
+            # Show correct answers
+            show_correct = get_text('show_correct_answers')
+            settings['show_correct_answers'] = show_correct == 'true'
+
+            # Points possible
+            points = get_text('points_possible')
+            if points:
+                try:
+                    settings['points_possible'] = float(points)
+                except (ValueError, TypeError):
+                    pass
+
+            # Quiz type
+            quiz_type = get_text('quiz_type')
+            if quiz_type:
+                settings['quiz_type'] = quiz_type
+
+            if self.verbose and settings:
+                print(f"    Quiz settings: {settings}")
+
+            return settings
+
+        except Exception as e:
+            if self.verbose:
+                print(f"     WARNING: Failed to parse assessment_meta.xml: {e}")
+            return {}
+
     def _create_import_notes_chapter(self) -> ChapterIR:
         """Create Import Notes chapter with unsupported content report"""
         chapter = ChapterIR(

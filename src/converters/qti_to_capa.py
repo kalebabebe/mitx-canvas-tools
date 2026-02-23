@@ -540,37 +540,70 @@ class QTIToCapaConverter:
         return self._prettify_xml(problem)
     
     def _strip_html_tags(self, html: str) -> str:
-        """Remove HTML tags from text, keeping content"""
+        """
+        Clean HTML for use in CAPA problem XML.
+
+        Preserves semantic HTML tags that CAPA supports (strong, em, ul, ol, li,
+        table, tr, td, th, img, br, sub, sup, pre, code, a) while removing
+        Canvas-specific wrapper tags (div, span, p with classes).
+        """
         if not html:
             return ''
-        
-        # Simple HTML tag removal - for basic cases
+
         import re
-        
-        # Remove <div> and <p> tags but keep content
+
+        # Tags to preserve (CAPA XML supports these)
+        preserve_tags = {
+            'strong', 'b', 'em', 'i', 'u',
+            'ul', 'ol', 'li',
+            'table', 'thead', 'tbody', 'tr', 'td', 'th',
+            'img', 'br', 'hr',
+            'sub', 'sup',
+            'pre', 'code',
+            'a',
+        }
+
+        # Remove Canvas-specific wrapper tags but keep content
+        # Remove <div>, <span>, <p> tags (but keep their content)
         text = re.sub(r'<div[^>]*>', '', html)
         text = re.sub(r'</div>', '', text)
-        text = re.sub(r'<p[^>]*>', '', text)
-        text = re.sub(r'</p>', '\n', text)
         text = re.sub(r'<span[^>]*>', '', text)
         text = re.sub(r'</span>', '', text)
-        
-        # Remove any remaining tags
-        text = re.sub(r'<[^>]+>', '', text)
-        
-        # Clean up whitespace
+        # Convert <p> to newlines for readability
+        text = re.sub(r'<p[^>]*>', '', text)
+        text = re.sub(r'</p>', '\n', text)
+
+        # Remove any tags NOT in the preserve list
+        def remove_unknown_tags(match):
+            tag_content = match.group(0)
+            # Extract tag name (handle both opening and closing)
+            tag_match = re.match(r'</?(\w+)', tag_content)
+            if tag_match:
+                tag_name = tag_match.group(1).lower()
+                if tag_name in preserve_tags:
+                    return tag_content  # Keep it
+            return ''  # Remove it
+
+        text = re.sub(r'<[^>]+>', remove_unknown_tags, text)
+
+        # Clean up excessive whitespace but preserve intentional newlines
+        text = re.sub(r'\n{3,}', '\n\n', text)
         text = text.strip()
-        
+
         return text
     
     def _prettify_xml(self, elem: ET.Element) -> str:
         """Convert XML element to pretty-printed string"""
         rough_string = ET.tostring(elem, encoding='unicode')
-        reparsed = minidom.parseString(rough_string)
-        pretty = reparsed.toprettyxml(indent="  ")
-        
-        # Remove XML declaration and extra blank lines
-        lines = [line for line in pretty.split('\n') 
-                if line.strip() and not line.startswith('<?xml')]
-        
-        return '\n'.join(lines)
+        try:
+            reparsed = minidom.parseString(rough_string)
+            pretty = reparsed.toprettyxml(indent="  ")
+
+            # Remove XML declaration and extra blank lines
+            lines = [line for line in pretty.split('\n')
+                    if line.strip() and not line.startswith('<?xml')]
+
+            return '\n'.join(lines)
+        except Exception:
+            # If prettifying fails, return raw XML rather than crashing
+            return rough_string
