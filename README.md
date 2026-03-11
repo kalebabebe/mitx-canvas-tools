@@ -1,4 +1,4 @@
-# MITx Canvas Tools
+# Canvas-edX Course Converter
 
 Converts Canvas LMS course exports (.imscc) to Open edX OLX format for import into MITx.
 
