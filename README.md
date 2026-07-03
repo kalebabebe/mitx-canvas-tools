@@ -23,10 +23,31 @@ report = convert_canvas_to_openedx('course.imscc', 'output_dir', verbose=True)
 print(report)
 ```
 
-### Web Interface
+### Web Interface (browser-only, no server)
+
+`index.html` runs the full converter **in the browser** via [Pyodide](https://pyodide.org) (Python compiled to WebAssembly). Course files never leave the user's machine.
+
+To host on GitHub Pages: make the repo public, then go to **Settings → Pages → Deploy from a branch → `main` / `/ (root)`**. The site fetches `src/*.py` directly from the same origin (`.nojekyll` ensures files like `__init__.py` are served). To test locally:
+
+```bash
+python -m http.server 8000  # open http://localhost:8000
+```
+
+Notes: first page load downloads the ~10MB Python runtime (cached afterward); very large course exports (100MB+) work but need corresponding browser memory.
+
+### Web Interface (Flask server)
 ```bash
 python app.py  # runs on http://localhost:5000
 ```
+
+## Running Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+Tests build a synthetic Canvas `.imscc` fixture and exercise the parser, QTI handling, the full conversion pipeline, and the Flask app (upload validation, error responses, download safety).
 
 ## What Gets Converted
 

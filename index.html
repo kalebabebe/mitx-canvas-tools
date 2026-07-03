@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Canvas to Open edX Converter</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f5f5;
+            min-height: 100vh;
+            padding: 40px 20px;
+        }
+        .container {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 40px;
+        }
+        h1 { color: #333; margin-bottom: 8px; font-size: 24px; font-weight: 600; }
+        .subtitle { color: #666; margin-bottom: 8px; font-size: 14px; }
+        .privacy-note {
+            color: #28a745;
+            font-size: 12px;
+            margin-bottom: 32px;
+        }
+        .upload-area {
+            border: 2px dashed #ccc;
+            border-radius: 6px;
+            padding: 40px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-bottom: 24px;
+        }
+        .upload-area:hover { border-color: #999; background: #fafafa; }
+        .upload-area.disabled { opacity: 0.5; pointer-events: none; }
+        .upload-icon { font-size: 48px; color: #999; margin-bottom: 16px; }
+        .upload-text { color: #666; font-size: 14px; }
+        .file-info {
+            background: #f8f8f8;
+            padding: 16px;
+            border-radius: 6px;
+            margin-bottom: 24px;
+            display: none;
+        }
+        .file-name { font-weight: 500; color: #333; margin-bottom: 8px; }
+        .file-size { color: #666; font-size: 13px; }
+        .convert-btn {
+            width: 100%;
+            padding: 14px;
+            background: #0066cc;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 15px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .convert-btn:hover:not(:disabled) { background: #0052a3; }
+        .convert-btn:disabled { background: #ccc; cursor: not-allowed; }
+        .progress-section { margin-top: 32px; display: none; }
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: #e0e0e0;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-bottom: 16px;
+        }
+        .progress-fill {
+            height: 100%;
+            background: #0066cc;
+            width: 0%;
+            transition: width 0.3s;
+        }
+        .progress-fill.indeterminate {
+            width: 30%;
+            animation: indeterminate 1.4s ease-in-out infinite;
+        }
+        @keyframes indeterminate {
+            0% { margin-left: -30%; }
+            100% { margin-left: 100%; }
+        }
+        .status-text { color: #666; font-size: 14px; margin-bottom: 8px; }
+        .result-section { margin-top: 32px; display: none; }
+        .result-box {
+            background: #f0f7ff;
+            border: 1px solid #d0e4ff;
+            padding: 20px;
+            border-radius: 6px;
+        }
+        .result-title { font-weight: 600; color: #333; margin-bottom: 16px; font-size: 16px; }
+        .result-stats { color: #666; font-size: 14px; line-height: 1.6; }
+        .report-section { margin-top: 16px; padding-top: 16px; border-top: 1px solid #d0e4ff; }
+        .report-section h4 {
+            color: #333; font-size: 13px; font-weight: 600; margin-bottom: 8px;
+            text-transform: uppercase; letter-spacing: 0.5px;
+        }
+        .report-section ul { list-style: none; padding: 0; margin: 0; }
+        .report-section li {
+            padding: 6px 0; font-size: 13px; color: #555;
+            border-bottom: 1px solid #e8f0fe;
+        }
+        .report-section li:last-child { border-bottom: none; }
+        .report-section .item-type {
+            display: inline-block; background: #e0e0e0; color: #555;
+            padding: 1px 8px; border-radius: 3px; font-size: 11px;
+            font-weight: 500; margin-right: 6px;
+        }
+        .report-section .action-note {
+            background: #fff3cd; border: 1px solid #ffc107; padding: 10px 12px;
+            border-radius: 5px; font-size: 13px; color: #664d03; margin-top: 8px;
+        }
+        .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .stat-item { font-size: 13px; color: #555; }
+        .stat-item strong { color: #333; }
+        .download-btn {
+            margin-top: 16px; width: 100%; padding: 12px;
+            background: #28a745; color: white; border: none; border-radius: 6px;
+            font-size: 14px; font-weight: 500; cursor: pointer;
+            text-decoration: none; display: inline-block; text-align: center;
+        }
+        .download-btn:hover { background: #218838; }
+        .error-box {
+            background: #fff5f5; border: 1px solid #ffd0d0; padding: 16px;
+            border-radius: 6px; color: #c00; display: none; margin-top: 16px;
+            white-space: pre-wrap; font-size: 13px;
+        }
+        .footer {
+            text-align: center; color: #999; font-size: 12px; margin-top: 24px;
+        }
+        .footer a { color: #0066cc; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Canvas to Open edX Converter</h1>
+        <p class="subtitle">Convert Canvas IMSCC exports to Open edX OLX format</p>
+        <p class="privacy-note">✓ Runs entirely in your browser — your course files never leave your computer</p>
+
+        <div class="upload-area disabled" id="uploadArea">
+            <div class="upload-icon">↑</div>
+            <div class="upload-text" id="uploadText">Loading Python runtime...</div>
+            <input type="file" id="fileInput" accept=".imscc,.zip" style="display: none;">
+        </div>
+
+        <div class="file-info" id="fileInfo">
+            <div class="file-name" id="fileName"></div>
+            <div class="file-size" id="fileSize"></div>
+        </div>
+
+        <button class="convert-btn" id="convertBtn" disabled>Convert to Open edX</button>
+
+        <div class="progress-section" id="progressSection">
+            <div class="progress-bar">
+                <div class="progress-fill" id="progressFill"></div>
+            </div>
+            <div class="status-text" id="statusText">Processing...</div>
+        </div>
+
+        <div class="error-box" id="errorBox"></div>
+
+        <div class="result-section" id="resultSection">
+            <div class="result-box">
+                <div class="result-title">Conversion Complete</div>
+                <div class="result-stats" id="resultStats"></div>
+                <a href="#" class="download-btn" id="downloadBtn">Download OLX Package</a>
+            </div>
+        </div>
+
+        <div class="footer">
+            Powered by <a href="https://pyodide.org" target="_blank" rel="noopener">Pyodide</a> (Python in WebAssembly)
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js"></script>
+    <script>
+        const uploadArea = document.getElementById('uploadArea');
+        const uploadText = document.getElementById('uploadText');
+        const fileInput = document.getElementById('fileInput');
+        const fileInfo = document.getElementById('fileInfo');
+        const fileName = document.getElementById('fileName');
+        const fileSize = document.getElementById('fileSize');
+        const convertBtn = document.getElementById('convertBtn');
+        const progressSection = document.getElementById('progressSection');
+        const progressFill = document.getElementById('progressFill');
+        const statusText = document.getElementById('statusText');
+        const resultSection = document.getElementById('resultSection');
+        const resultStats = document.getElementById('resultStats');
+        const downloadBtn = document.getElementById('downloadBtn');
+        const errorBox = document.getElementById('errorBox');
+
+        let selectedFile = null;
+        let pyodide = null;
+        let downloadObjectUrl = null;
+
+        // Converter source files, fetched from this same GitHub Pages site
+        const SRC_FILES = [
+            'src/__init__.py',
+            'src/converter.py',
+            'src/models/intermediate_rep.py',
+            'src/parsers/canvas_parser.py',
+            'src/parsers/qti_parser.py',
+            'src/converters/asset_manager.py',
+            'src/converters/canvas_to_ir.py',
+            'src/converters/qti_to_capa.py',
+            'src/generators/olx_generator.py',
+            'src/utils/url_name_generator.py',
+        ];
+        // Package __init__ files that may not exist as files in the repo
+        const PKG_DIRS = ['src', 'src/models', 'src/parsers', 'src/converters', 'src/generators', 'src/utils'];
+
+        async function initPyodide() {
+            try {
+                uploadText.textContent = 'Loading Python runtime (~10 MB, first load only)...';
+                pyodide = await loadPyodide();
+
+                uploadText.textContent = 'Loading packages (beautifulsoup4, lxml)...';
+                await pyodide.loadPackage(['beautifulsoup4', 'lxml']);
+
+                uploadText.textContent = 'Fetching converter code...';
+                pyodide.FS.mkdirTree('/converter');
+                for (const dir of PKG_DIRS) {
+                    pyodide.FS.mkdirTree('/converter/' + dir);
+                }
+                await Promise.all(SRC_FILES.map(async (path) => {
+                    const resp = await fetch(path);
+                    if (!resp.ok) throw new Error(`Could not fetch ${path} (HTTP ${resp.status})`);
+                    const text = await resp.text();
+                    pyodide.FS.writeFile('/converter/' + path, text);
+                }));
+                // Ensure every package dir has an __init__.py
+                for (const dir of PKG_DIRS) {
+                    const initPath = '/converter/' + dir + '/__init__.py';
+                    try { pyodide.FS.stat(initPath); }
+                    catch { pyodide.FS.writeFile(initPath, ''); }
+                }
+                pyodide.runPython(`import sys; sys.path.insert(0, '/converter')`);
+
+                // Ready
+                uploadArea.classList.remove('disabled');
+                uploadText.textContent = 'Click to select or drag and drop Canvas .imscc file';
+            } catch (err) {
+                uploadText.textContent = 'Failed to load converter';
+                showError('Initialization failed: ' + err.message +
+                    '\nTry reloading the page. If this persists, check your network connection.');
+            }
+        }
+        initPyodide();
+
+        uploadArea.addEventListener('click', () => fileInput.click());
+
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.style.borderColor = '#999';
+        });
+
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.style.borderColor = '#ccc';
+        });
+
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.style.borderColor = '#ccc';
+            const files = e.dataTransfer.files;
+            if (files.length > 0) handleFile(files[0]);
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) handleFile(e.target.files[0]);
+        });
+
+        function handleFile(file) {
+            if (!file.name.endsWith('.imscc') && !file.name.endsWith('.zip')) {
+                showError('Please select a .imscc or .zip file');
+                return;
+            }
+            selectedFile = file;
+            fileName.textContent = file.name;
+            fileSize.textContent = formatBytes(file.size);
+            fileInfo.style.display = 'block';
+            convertBtn.disabled = false;
+            errorBox.style.display = 'none';
+            resultSection.style.display = 'none';
+        }
+
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+        }
+
+        convertBtn.addEventListener('click', async () => {
+            if (!selectedFile || !pyodide) return;
+
+            convertBtn.disabled = true;
+            progressSection.style.display = 'block';
+            resultSection.style.display = 'none';
+            errorBox.style.display = 'none';
+            progressFill.classList.add('indeterminate');
+
+            // Stream the converter's verbose output into the status line
+            pyodide.setStdout({ batched: (msg) => { statusText.textContent = msg.trim().slice(0, 120); } });
+
+            try {
+                statusText.textContent = 'Reading file...';
+                const buf = new Uint8Array(await selectedFile.arrayBuffer());
+                pyodide.FS.writeFile('/tmp/course.imscc', buf);
+
+                statusText.textContent = 'Converting course...';
+                // Yield to the browser so the UI repaints before the heavy sync work
+                await new Promise(r => setTimeout(r, 50));
+
+                const reportJson = await pyodide.runPythonAsync(`
+import json, shutil, tarfile, os
+
+out_dir = '/tmp/olx_out'
+shutil.rmtree(out_dir, ignore_errors=True)
+
+from src.converter import convert_canvas_to_openedx
+report = convert_canvas_to_openedx('/tmp/course.imscc', out_dir, verbose=True)
+
+tar_path = '/tmp/course_olx.tar.gz'
+if os.path.exists(tar_path):
+    os.remove(tar_path)
+with tarfile.open(tar_path, 'w:gz', compresslevel=6) as tar:
+    for root, dirs, files in os.walk(out_dir):
+        for f in files:
+            full = os.path.join(root, f)
+            tar.add(full, arcname=os.path.relpath(full, out_dir))
+
+shutil.rmtree(out_dir, ignore_errors=True)
+os.remove('/tmp/course.imscc')
+json.dumps(report)
+                `);
+
+                const report = JSON.parse(reportJson);
+
+                // Build download blob from the in-memory tarball
+                const tarBytes = pyodide.FS.readFile('/tmp/course_olx.tar.gz');
+                pyodide.FS.unlink('/tmp/course_olx.tar.gz');
+                if (downloadObjectUrl) URL.revokeObjectURL(downloadObjectUrl);
+                const blob = new Blob([tarBytes], { type: 'application/gzip' });
+                downloadObjectUrl = URL.createObjectURL(blob);
+                const baseName = selectedFile.name.replace(/\.(imscc|zip)$/i, '');
+                downloadBtn.href = downloadObjectUrl;
+                downloadBtn.download = baseName + '_olx.tar.gz';
+
+                progressFill.classList.remove('indeterminate');
+                progressFill.style.width = '100%';
+                statusText.textContent = 'Complete';
+                showResults(report);
+            } catch (error) {
+                progressFill.classList.remove('indeterminate');
+                progressSection.style.display = 'none';
+                let msg = String(error.message || error);
+                // Surface just the final Python exception line for readability
+                const lines = msg.trim().split('\n');
+                const lastLine = lines[lines.length - 1];
+                showError('Conversion failed: ' + lastLine + (lines.length > 1 ? '\n\nFull traceback:\n' + msg : ''));
+            } finally {
+                pyodide.setStdout();
+                convertBtn.disabled = false;
+            }
+        });
+
+        function showResults(report) {
+            progressSection.style.display = 'none';
+            resultSection.style.display = 'block';
+
+            const stats = report.statistics || {};
+
+            let html = `<strong>${report.course_title || ''}</strong>`;
+            if (report.course_id) {
+                html += `<br><span style="font-size:12px;color:#888;">${report.course_id}</span>`;
+            }
+
+            html += `<div class="report-section">
+                <h4>Conversion Statistics</h4>
+                <div class="stat-grid">
+                    <div class="stat-item"><strong>${stats.chapters}</strong> Chapters</div>
+                    <div class="stat-item"><strong>${stats.sequentials || '—'}</strong> Subsections</div>
+                    <div class="stat-item"><strong>${stats.verticals || '—'}</strong> Units</div>
+                    <div class="stat-item"><strong>${stats.components}</strong> Components</div>
+                    <div class="stat-item"><strong>${stats.assets || 0}</strong> Assets copied</div>
+                </div>
+            </div>`;
+
+            const timedQuizzes = report.timed_quizzes || [];
+            if (timedQuizzes.length > 0) {
+                html += `<div class="report-section"><h4>Timed Quizzes</h4><ul>`;
+                for (const q of timedQuizzes) {
+                    html += `<li><strong>${q.title}</strong> &mdash; ${q.time_limit} min, ${q.questions} questions</li>`;
+                }
+                html += `</ul>
+                    <div class="action-note">
+                        These quizzes had time limits in Canvas. To enforce time limits in Open edX, go to Studio &rarr; subsection settings &rarr; enable "Timed Examination" for each subsection above.
+                    </div>
+                </div>`;
+            }
+
+            const skippedItems = report.skipped_items || [];
+            if (skippedItems.length > 0) {
+                const byType = {};
+                for (const item of skippedItems) {
+                    if (!byType[item.type]) byType[item.type] = [];
+                    byType[item.type].push(item);
+                }
+                html += `<div class="report-section">
+                    <h4>Skipped Items (${skippedItems.length})</h4><ul>`;
+                for (const [type, items] of Object.entries(byType).sort()) {
+                    for (const item of items) {
+                        html += `<li><span class="item-type">${type}</span> ${item.title}</li>`;
+                    }
+                }
+                html += `</ul>
+                    <div class="action-note">
+                        These items could not be auto-converted. Recreate them manually in Open edX Studio. An "Import Notes" chapter has been added to the course with details.
+                    </div>
+                </div>`;
+            }
+
+            if (timedQuizzes.length === 0 && skippedItems.length === 0) {
+                html += `<div class="report-section" style="color:#28a745;">
+                    All content converted successfully — no items were skipped.
+                </div>`;
+            }
+
+            resultStats.innerHTML = html;
+        }
+
+        function showError(message) {
+            errorBox.textContent = message;
+            errorBox.style.display = 'block';
+        }
+    </script>
+</body>
+</html>

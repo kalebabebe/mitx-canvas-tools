@@ -106,6 +106,14 @@
             width: 0%;
             transition: width 0.3s;
         }
+        .progress-fill.indeterminate {
+            width: 30%;
+            animation: indeterminate 1.4s ease-in-out infinite;
+        }
+        @keyframes indeterminate {
+            0% { margin-left: -30%; }
+            100% { margin-left: 100%; }
+        }
         .status-text {
             color: #666;
             font-size: 14px;
@@ -316,7 +324,7 @@
             return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
         }
 
-        convertBtn.addEventListener('click', async () => {
+        convertBtn.addEventListener('click', () => {
             if (!selectedFile) return;
 
             convertBtn.disabled = true;
@@ -327,44 +335,67 @@
             const formData = new FormData();
             formData.append('file', selectedFile);
 
-            try {
-                updateProgress(10, 'Uploading file...');
+            // XHR instead of fetch: gives real upload progress events
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', '/convert');
+            xhr.responseType = 'json';
 
-                const response = await fetch('/convert', {
-                    method: 'POST',
-                    body: formData
-                });
-
-                updateProgress(30, 'Parsing Canvas course...');
-                await new Promise(r => setTimeout(r, 500));
-
-                updateProgress(50, 'Converting content...');
-                await new Promise(r => setTimeout(r, 500));
-
-                updateProgress(70, 'Copying assets...');
-                await new Promise(r => setTimeout(r, 500));
-
-                updateProgress(90, 'Generating OLX...');
-                await new Promise(r => setTimeout(r, 500));
-
-                if (!response.ok) {
-                    throw new Error('Conversion failed');
+            xhr.upload.addEventListener('progress', (e) => {
+                if (e.lengthComputable) {
+                    const pct = Math.round((e.loaded / e.total) * 100);
+                    updateProgress(pct, `Uploading... ${pct}%`);
+                    if (pct >= 100) setIndeterminate('Converting course... this can take a few minutes for large courses');
                 }
+            });
 
-                const result = await response.json();
-                updateProgress(100, 'Complete');
+            xhr.addEventListener('load', () => {
+                clearIndeterminate();
+                const result = xhr.response;
+                if (xhr.status >= 200 && xhr.status < 300 && result && result.success) {
+                    updateProgress(100, 'Complete');
+                    showResults(result);
+                } else {
+                    showServerError(result, xhr.status);
+                }
+            });
 
-                showResults(result);
-            } catch (error) {
-                showError('Conversion failed: ' + error.message);
+            xhr.addEventListener('error', () => {
+                clearIndeterminate();
+                showError('Network error — could not reach the server.');
                 progressSection.style.display = 'none';
                 convertBtn.disabled = false;
-            }
+            });
+
+            xhr.send(formData);
         });
+
+        function showServerError(result, status) {
+            let msg;
+            if (result && result.error) {
+                msg = result.error;
+                if (result.detail) msg += ' — ' + result.detail;
+                if (result.type) msg += ' (' + result.type + ')';
+            } else {
+                msg = 'Conversion failed (HTTP ' + status + ')';
+            }
+            showError(msg);
+            progressSection.style.display = 'none';
+            convertBtn.disabled = false;
+        }
 
         function updateProgress(percent, status) {
             progressFill.style.width = percent + '%';
             statusText.textContent = status;
+        }
+
+        function setIndeterminate(status) {
+            progressFill.classList.add('indeterminate');
+            statusText.textContent = status;
+        }
+
+        function clearIndeterminate() {
+            progressFill.classList.remove('indeterminate');
+            progressFill.style.width = '100%';
         }
 
         function showResults(result) {

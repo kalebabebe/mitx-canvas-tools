@@ -1,0 +1,570 @@
+<h1><strong>Canvas to Open edX Course Converter</strong></h1>
+
+<ol>
+<li><a href="#h_01OVERVIEW">Overview</a></li>
+<li><a href="#h_02WHATGETS">What Gets Converted</a></li>
+<li><a href="#h_03PREREQS">Prerequisites</a></li>
+<li><a href="#h_04WEBUSAGE">Using the Web Interface (Course Teams)</a></li>
+<li><a href="#h_05CLIUSAGE">Using the Command Line (ETs)</a></li>
+<li><a href="#h_06AFTERIMPORT">After Importing to Open edX</a></li>
+<li><a href="#h_07TROUBLESHOOT">Troubleshooting</a></li>
+<li><a href="#h_08ARCHITECTURE">Technical Architecture (Support/Maintenance)</a></li>
+<li><a href="#h_09HOSTING">Hosting and Deployment</a></li>
+<li><a href="#h_10ENVCONFIG">Environment Variables and Configuration</a></li>
+<li><a href="#h_11DEPENDENCIES">Dependencies</a></li>
+<li><a href="#h_12FAILUREMODES">Common Failure Modes and Diagnostics</a></li>
+<li><a href="#h_13RESTART">How to Restart / Redeploy</a></li>
+<li><a href="#h_14REPO">Code Repository and Contact</a></li>
+</ol>
+
+<hr />
+
+<h2 id="h_01OVERVIEW"><strong>Overview</strong></h2>
+
+<p>The Canvas to Open edX Course Converter transforms Canvas LMS course exports (<code>.imscc</code> files) into Open edX OLX format, allowing course teams to migrate content from Canvas into MITx on Open edX. It converts course structure, pages, assignments, quizzes, media assets, and grading policies automatically, producing a <code>.tar.gz</code> archive that can be imported directly into Open edX Studio.</p>
+
+<p>Use this tool when a course is being migrated from Canvas to Open edX, or when Canvas course content needs to be repurposed in MITx.</p>
+
+<p>The converter is available as a web application at <a href="https://kalebabebe.pythonanywhere.com/" target="_blank" rel="noopener noreferrer">https://kalebabebe.pythonanywhere.com/</a> and as a command-line tool for local use.</p>
+
+<h2 id="h_02WHATGETS"><strong>What Gets Converted</strong></h2>
+
+<h3><strong>Course Structure</strong></h3>
+<ul>
+<li>Canvas modules → OLX chapters and subsections (sequentials)</li>
+<li>Wiki pages → HTML components with asset URL conversion</li>
+<li>Assignments with online text or file upload submission → Open Response Assessments (ORA) with staff grading</li>
+<li>Assignments with other submission types → HTML info blocks with metadata</li>
+<li>Quizzes → Problem components (see supported question types below)</li>
+<li>Canvas front page → <code>info/updates.html</code> (course updates page in Open edX)</li>
+<li>Assignment groups with percent weighting → Open edX grading policy</li>
+<li>Module prerequisites → Sequential prerequisites in Open edX</li>
+<li>Published/unpublished state is preserved for modules and items</li>
+</ul>
+
+<h3><strong>Quiz Question Types</strong></h3>
+<table>
+<thead>
+<tr>
+<th>Canvas Type</th>
+<th>Open edX Output</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Multiple Choice</td>
+<td><code>&lt;multiplechoiceresponse&gt;</code></td>
+<td>Full support</td>
+</tr>
+<tr>
+<td>True/False</td>
+<td><code>&lt;multiplechoiceresponse&gt;</code></td>
+<td>Full support</td>
+</tr>
+<tr>
+<td>Multiple Response (checkbox)</td>
+<td><code>&lt;choiceresponse&gt;</code></td>
+<td>Full support</td>
+</tr>
+<tr>
+<td>Short Answer</td>
+<td><code>&lt;stringresponse&gt;</code></td>
+<td>Case-insensitive; supports multiple accepted answers</td>
+</tr>
+<tr>
+<td>Numerical</td>
+<td><code>&lt;numericalresponse&gt;</code></td>
+<td>Supports tolerance ranges</td>
+</tr>
+<tr>
+<td>Essay</td>
+<td>Open Response Assessment (ORA)</td>
+<td>Staff grading only; basic rubric auto-generated</td>
+</tr>
+<tr>
+<td>Matching</td>
+<td><code>&lt;optionresponse&gt;</code></td>
+<td>Converted to dropdown format</td>
+</tr>
+<tr>
+<td>Fill in Multiple Blanks</td>
+<td><code>&lt;optionresponse&gt;</code></td>
+<td>Converted to dropdown format</td>
+</tr>
+<tr>
+<td>Multiple Dropdowns</td>
+<td><code>&lt;optionresponse&gt;</code></td>
+<td>Full support</td>
+</tr>
+<tr>
+<td>Calculated / Formula</td>
+<td><code>&lt;numericalresponse&gt;</code></td>
+<td>Static conversion using one sample variable set</td>
+</tr>
+<tr>
+<td>File Upload</td>
+<td>Placeholder HTML</td>
+<td>Instructions to use ORA with file upload</td>
+</tr>
+<tr>
+<td>Text Only (no question)</td>
+<td>HTML component</td>
+<td>Informational text preserved as-is</td>
+</tr>
+</tbody>
+</table>
+
+<p>Question banks from <code>non_cc_assessments/*.qti</code> are automatically included when referenced by quizzes.</p>
+
+<h3><strong>Media and Assets</strong></h3>
+<ul>
+<li>Files from <code>web_resources/</code> are copied to <code>/static/</code></li>
+<li>Image and file URLs are rewritten from <code>$IMS-CC-FILEBASE$</code> to <code>/static/</code></li>
+<li>Panopto LTI embeds are converted to direct Panopto embed iframes (using MIT's Panopto instance)</li>
+<li>Internal wiki links are converted to <code>/jump_to_id/</code> links where a matching component exists</li>
+</ul>
+
+<h3><strong>What Requires Manual Setup</strong></h3>
+<p>The converter creates an "Import Notes" chapter at the end of the course listing content that could not be automatically converted:</p>
+<ul>
+<li>LTI tool integrations (Gradescope, Perusall, etc.)</li>
+<li>External URL links</li>
+<li>Discussion topics</li>
+<li>Timed quizzes (time limits must be configured manually in Open edX Studio under subsection settings → "Timed Examination")</li>
+<li>Calculated/formula questions use a single static sample, so they may need to be rebuilt as Open edX <code>customresponse</code> problems for dynamic variable generation</li>
+</ul>
+
+<h2 id="h_03PREREQS"><strong>Prerequisites</strong></h2>
+
+<h3><strong>For Web Interface Users (Course Teams)</strong></h3>
+<ul>
+<li>A Canvas course export file in <code>.imscc</code> format (exported from Canvas → Settings → Export Course Content → Course)</li>
+<li>A web browser</li>
+<li>Access to Open edX Studio for importing the converted course</li>
+</ul>
+
+<h3><strong>For CLI Users (ETs)</strong></h3>
+<ul>
+<li>Python 3.10 or higher</li>
+<li>The project dependencies installed (see Dependencies section)</li>
+<li>A Canvas <code>.imscc</code> export file</li>
+</ul>
+
+<h2 id="h_04WEBUSAGE"><strong>Using the Web Interface (Course Teams)</strong></h2>
+
+<h3><strong>Step 1: Export Your Course from Canvas</strong></h3>
+<ol>
+<li>In Canvas, go to your course → Settings → Export Course Content.</li>
+<li>Select "Course" as the export type and click "Create Export."</li>
+<li>Download the resulting <code>.imscc</code> file when the export is ready.</li>
+</ol>
+
+<h3><strong>Step 2: Convert the Course</strong></h3>
+<ol>
+<li>Go to <a href="https://kalebabebe.pythonanywhere.com/" target="_blank" rel="noopener noreferrer">https://kalebabebe.pythonanywhere.com/</a>.</li>
+<li>Click the upload area or drag and drop your <code>.imscc</code> file onto it.
+<ul>
+<li>Only <code>.imscc</code> files are accepted. The current maximum file size is approximately 70 MB.</li>
+</ul>
+</li>
+<li>Click "Convert to Open edX."</li>
+<li>Wait for the conversion to complete. A progress bar will display during processing.</li>
+</ol>
+
+<p>[SCREENSHOT: The web interface showing the upload area and "Convert to Open edX" button]</p>
+
+<h3><strong>Step 3: Review the Conversion Report</strong></h3>
+<p>After conversion, the tool displays a report with:</p>
+<ul>
+<li>Course title and ID</li>
+<li>Conversion statistics (chapters, subsections, units, components, assets copied)</li>
+<li>Timed quizzes that need manual time-limit configuration in Studio</li>
+<li>Skipped items that could not be auto-converted, grouped by type</li>
+</ul>
+
+<p>[SCREENSHOT: A sample conversion report showing statistics and skipped items]</p>
+
+<h3><strong>Step 4: Download and Import</strong></h3>
+<ol>
+<li>Click "Download OLX Package" to download the <code>.tar.gz</code> file.</li>
+<li>In Open edX Studio, go to your course → Tools → Import.</li>
+<li>Upload the <code>.tar.gz</code> file and follow the Studio import prompts.</li>
+</ol>
+
+<h3><strong>Step 5: Post-Import Review</strong></h3>
+<ol>
+<li>Navigate through the course in Studio to verify content converted correctly.</li>
+<li>Check the "Import Notes" chapter at the end of the course for items that need manual setup.</li>
+<li>For timed quizzes, go to the relevant subsection settings and enable "Timed Examination" with the appropriate time limit.</li>
+<li>Recreate any LTI tools, external URLs, or discussion topics manually.</li>
+<li>Review essay questions and ORA components to confirm rubrics and settings are appropriate.</li>
+<li>Test quiz questions to verify correct answers imported properly.</li>
+</ol>
+
+<h2 id="h_05CLIUSAGE"><strong>Using the Command Line (ETs)</strong></h2>
+
+<h3><strong>Installation</strong></h3>
+<pre class="wysiwyg-code-block"><code>pip install -r requirements.txt</code></pre>
+
+<h3><strong>Basic Usage</strong></h3>
+<pre class="wysiwyg-code-block"><code>python -m src.converter course_export.imscc output_directory</code></pre>
+
+<p>Add the <code>--verbose</code> flag for detailed progress output:</p>
+<pre class="wysiwyg-code-block"><code>python -m src.converter course_export.imscc output_directory --verbose</code></pre>
+
+<h3><strong>Python API</strong></h3>
+<p>The converter can also be used programmatically:</p>
+<pre class="wysiwyg-code-block"><code>from src.converter import convert_canvas_to_openedx
+
+report = convert_canvas_to_openedx('course.imscc', 'output_dir', verbose=True)
+print(report)</code></pre>
+
+<h3><strong>Output Structure</strong></h3>
+<p>The converter produces the standard Open edX OLX directory structure:</p>
+<pre class="wysiwyg-code-block"><code>output_dir/
+  course.xml
+  course/
+  chapter/
+  sequential/
+  vertical/
+  html/
+  problem/
+  openassessment/
+  static/
+  policies/
+  about/
+  info/
+    updates.html</code></pre>
+
+<p>To import via CLI, compress the output directory into a <code>.tar.gz</code> archive:</p>
+<pre class="wysiwyg-code-block"><code>tar -czf course_olx.tar.gz -C output_dir .</code></pre>
+
+<h2 id="h_06AFTERIMPORT"><strong>After Importing to Open edX</strong></h2>
+
+<h3><strong>Expected Results</strong></h3>
+<ul>
+<li>Each Canvas module appears as a chapter (section) in Studio.</li>
+<li>Each module item appears as a unit within its module's subsection.</li>
+<li>Wiki pages display as HTML components with all images and internal links converted.</li>
+<li>Quizzes appear as individual problem components (one per question) within a unit.</li>
+<li>Assignments with online submission types appear as ORA components with staff grading enabled.</li>
+<li>Panopto videos display as embedded iframes.</li>
+<li>The Canvas front page content appears on the course Updates page.</li>
+<li>Grading policy reflects Canvas assignment group weights (if percent weighting was used).</li>
+</ul>
+
+<h3><strong>Items That Need Manual Attention</strong></h3>
+<ul>
+<li><strong>Timed quizzes:</strong> Time limits are noted in the conversion report and appended to the unit title, but must be configured in Studio under subsection settings → Timed Examination.</li>
+<li><strong>LTI tools:</strong> Gradescope, Perusall, and other external tool integrations must be reconfigured in Studio.</li>
+<li><strong>Discussion topics:</strong> Canvas discussions do not have a direct equivalent and must be recreated.</li>
+<li><strong>Calculated questions:</strong> These are converted using one sample variable set. For dynamic questions, rebuild them as <code>customresponse</code> problems.</li>
+<li><strong>File upload questions:</strong> Converted to placeholder text. Set up ORA with file upload or use a separate assignment.</li>
+</ul>
+
+<h2 id="h_07TROUBLESHOOT"><strong>Troubleshooting</strong></h2>
+
+<h3><strong>Common Issues</strong></h3>
+
+<table>
+<thead>
+<tr>
+<th>Problem</th>
+<th>Likely Cause</th>
+<th>Solution</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>"File must be .imscc or .zip"</td>
+<td>Wrong file type uploaded</td>
+<td>Export from Canvas as "Course" (not "Quiz" or other type). The file should end in <code>.imscc</code>.</td>
+</tr>
+<tr>
+<td>Conversion fails during "converting course"</td>
+<td>Corrupted or non-standard IMSCC file</td>
+<td>Re-export the course from Canvas. Ensure the export completed successfully before downloading.</td>
+</tr>
+<tr>
+<td>Conversion fails during "creating download archive"</td>
+<td>Disk space exhaustion on PythonAnywhere</td>
+<td>The file may be too large. Current practical limit is approximately 70 MB. Try exporting without large media files, or use the CLI locally.</td>
+</tr>
+<tr>
+<td>Missing images after import</td>
+<td>Assets not in the Canvas <code>web_resources/</code> directory</td>
+<td>Check that images were included in the Canvas export. Externally hosted images (not uploaded to Canvas) will retain their original URLs.</td>
+</tr>
+<tr>
+<td>Quiz questions show "[No correct answer specified]"</td>
+<td>Canvas quiz had no answer key set</td>
+<td>Edit the problem in Studio and set the correct answer manually.</td>
+</tr>
+<tr>
+<td>Import fails in Open edX Studio</td>
+<td>Malformed OLX XML</td>
+<td>Check the Studio import error log. Common cause: special characters in content that break XML parsing. Report the issue to <a href="mailto:mitx-support@mit.edu">mitx-support@mit.edu</a> with the IMSCC file attached.</td>
+</tr>
+<tr>
+<td>Panopto videos not playing</td>
+<td>Video ID not found or permissions issue</td>
+<td>Verify the Panopto video exists and is accessible. The converter uses MIT's Panopto instance (<code>mit.hosted.panopto.com</code>).</td>
+</tr>
+</tbody>
+</table>
+
+<hr />
+
+<h2 id="h_08ARCHITECTURE"><strong>Technical Architecture (Support/Maintenance)</strong></h2>
+
+<p>The converter uses a four-stage pipeline architecture:</p>
+
+<ol>
+<li><strong>Parse:</strong> <code>CanvasParser</code> extracts the IMSCC ZIP file to a temp directory, then parses <code>imsmanifest.xml</code>, <code>course_settings.xml</code>, <code>module_meta.xml</code>, and <code>assignment_groups.xml</code>. The <code>QTIParser</code> handles quiz files in QTI 1.2 format, including question banks from <code>non_cc_assessments/</code>.</li>
+<li><strong>Convert to IR:</strong> <code>CanvasToIRConverter</code> transforms the parsed Canvas data into a format-agnostic Intermediate Representation (IR) using dataclasses (<code>CourseIR</code>, <code>ChapterIR</code>, <code>SequentialIR</code>, <code>VerticalIR</code>, <code>ComponentIR</code>). <code>QTIToCapaConverter</code> converts quiz questions to CAPA XML, ORA XML, or HTML. <code>AssetManager</code> rewrites asset URLs and converts Panopto LTI embeds.</li>
+<li><strong>Copy assets:</strong> <code>AssetManager.copy_all_assets()</code> copies everything from the Canvas <code>web_resources/</code> directory to the OLX <code>static/</code> directory.</li>
+<li><strong>Generate OLX:</strong> <code>OLXGenerator</code> writes the full Open edX OLX directory structure, including course XML, chapter/sequential/vertical hierarchy, HTML and problem files, grading policy JSON, about page, and updates page.</li>
+</ol>
+
+<h3><strong>Key Source Files</strong></h3>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>app.py</code></td>
+<td>Flask web application; handles upload, conversion, and download</td>
+</tr>
+<tr>
+<td><code>src/converter.py</code></td>
+<td>Main orchestrator; ties the pipeline stages together</td>
+</tr>
+<tr>
+<td><code>src/parsers/canvas_parser.py</code></td>
+<td>Parses IMSCC structure, modules, assignments, wiki pages</td>
+</tr>
+<tr>
+<td><code>src/parsers/qti_parser.py</code></td>
+<td>Parses QTI 1.2 quiz XML; handles 12 question types and question banks</td>
+</tr>
+<tr>
+<td><code>src/converters/canvas_to_ir.py</code></td>
+<td>Converts Canvas data to Intermediate Representation</td>
+</tr>
+<tr>
+<td><code>src/converters/qti_to_capa.py</code></td>
+<td>Converts QTI questions to CAPA XML, ORA, or HTML</td>
+</tr>
+<tr>
+<td><code>src/converters/asset_manager.py</code></td>
+<td>Copies assets; converts URLs, Panopto embeds, and wiki links</td>
+</tr>
+<tr>
+<td><code>src/generators/olx_generator.py</code></td>
+<td>Generates the full OLX directory structure and XML files</td>
+</tr>
+<tr>
+<td><code>src/models/intermediate_rep.py</code></td>
+<td>Dataclass definitions for IR (CourseIR, ChapterIR, etc.)</td>
+</tr>
+<tr>
+<td><code>src/utils/url_name_generator.py</code></td>
+<td>Generates unique, URL-safe <code>url_name</code> identifiers for OLX components</td>
+</tr>
+<tr>
+<td><code>src/__main__.py</code></td>
+<td>CLI entry point (<code>python -m src.converter</code>)</td>
+</tr>
+<tr>
+<td><code>templates/index.html</code></td>
+<td>Web interface HTML/CSS/JS (single-page app)</td>
+</tr>
+</tbody>
+</table>
+
+<h3><strong>Conversion Pipeline Diagram</strong></h3>
+<pre class="wysiwyg-code-block"><code>Canvas .imscc file
+      |
+      v
+ [CanvasParser] -- extracts ZIP, parses XML manifests and settings
+      |
+      v
+ [CanvasToIRConverter] + [QTIParser] + [QTIToCapaConverter] + [AssetManager]
+      |                       |                |                    |
+      |    parses quiz QTI ---+                |                    |
+      |    converts to CAPA/ORA ---------------+                    |
+      |    rewrites asset URLs, Panopto embeds ---------------------+
+      |
+      v
+ Intermediate Representation (CourseIR dataclasses)
+      |
+      v
+ [OLXGenerator] -- writes OLX directory structure
+      |
+      v
+ Open edX OLX .tar.gz (ready for Studio import)</code></pre>
+
+<h2 id="h_09HOSTING"><strong>Hosting and Deployment</strong></h2>
+
+<p>Currently hosted on <strong>PythonAnywhere</strong> at <a href="https://kalebabebe.pythonanywhere.com/" target="_blank" rel="noopener noreferrer">https://kalebabebe.pythonanywhere.com/</a>.</p>
+
+<h3><strong>PythonAnywhere Details</strong></h3>
+<ul>
+<li>Web app code is located at <code>~/mitx-canvas-tools-main/</code> on the PythonAnywhere server.</li>
+<li>The app runs via WSGI (PythonAnywhere handles this automatically).</li>
+<li>Temporary files are stored in <code>/tmp/uploads</code> and <code>/tmp/outputs</code> and are cleaned up before each conversion to manage disk space.</li>
+<li>The Procfile specifies <code>gunicorn app:app --timeout 300</code> for production use, though PythonAnywhere uses its own WSGI server.</li>
+</ul>
+
+<h3><strong>Current Limitations (PythonAnywhere)</strong></h3>
+<ul>
+<li>Practical file size limit is approximately <strong>70 MB</strong> due to disk space constraints. The app is configured for a 200 MB max upload, but PythonAnywhere's free/limited disk quota is the real bottleneck.</li>
+<li>Hosting is planned to move to a different platform in the future, which should remove this limitation.</li>
+</ul>
+
+<h3><strong>Deploying Updates</strong></h3>
+<ol>
+<li>Upload the new code to <code>~/mitx-canvas-tools-main/</code> on PythonAnywhere (via the Files tab or <code>git pull</code> if the repo is cloned there).</li>
+<li>Go to the Web tab in PythonAnywhere.</li>
+<li>Click "Reload" to restart the web app with the updated code.</li>
+</ol>
+
+<h2 id="h_10ENVCONFIG"><strong>Environment Variables and Configuration</strong></h2>
+
+<p>The application has minimal configuration requirements:</p>
+
+<table>
+<thead>
+<tr>
+<th>Setting</th>
+<th>Location</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PORT</code></td>
+<td>Environment variable</td>
+<td><code>5000</code></td>
+<td>Port for local Flask development server</td>
+</tr>
+<tr>
+<td><code>MAX_CONTENT_LENGTH</code></td>
+<td><code>app.py</code></td>
+<td>200 MB</td>
+<td>Maximum upload file size (Flask setting)</td>
+</tr>
+<tr>
+<td><code>UPLOAD_FOLDER</code></td>
+<td><code>app.py</code></td>
+<td><code>/tmp/uploads</code></td>
+<td>Temporary directory for uploaded files</td>
+</tr>
+<tr>
+<td><code>OUTPUT_FOLDER</code></td>
+<td><code>app.py</code></td>
+<td><code>/tmp/outputs</code></td>
+<td>Temporary directory for conversion output</td>
+</tr>
+</tbody>
+</table>
+
+<p>No API keys, database connections, or external service credentials are required. The Panopto embed URL (<code>mit.hosted.panopto.com</code>) is hardcoded in <code>src/converters/asset_manager.py</code>.</p>
+
+<h2 id="h_11DEPENDENCIES"><strong>Dependencies</strong></h2>
+
+<p>Specified in <code>requirements.txt</code>:</p>
+
+<table>
+<thead>
+<tr>
+<th>Package</th>
+<th>Version</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>beautifulsoup4</code></td>
+<td>&gt;= 4.12.0</td>
+<td>HTML parsing for wiki pages and assignment content</td>
+</tr>
+<tr>
+<td><code>lxml</code></td>
+<td>&gt;= 4.9.0</td>
+<td>XML parsing backend for BeautifulSoup</td>
+</tr>
+<tr>
+<td><code>Flask</code></td>
+<td>&gt;= 3.0.0</td>
+<td>Web application framework</td>
+</tr>
+<tr>
+<td><code>gunicorn</code></td>
+<td>&gt;= 21.2.0</td>
+<td>Production WSGI server</td>
+</tr>
+<tr>
+<td><code>Werkzeug</code></td>
+<td>&gt;= 3.0.0</td>
+<td>WSGI utilities (used for secure filename handling)</td>
+</tr>
+</tbody>
+</table>
+
+<p>Python standard library modules used: <code>xml.etree.ElementTree</code>, <code>xml.dom.minidom</code>, <code>zipfile</code>, <code>tarfile</code>, <code>tempfile</code>, <code>shutil</code>, <code>json</code>, <code>re</code>, <code>urllib.parse</code>, <code>argparse</code>, <code>dataclasses</code>.</p>
+
+<p>Runtime: Python 3.11.7 (specified in <code>runtime.txt</code>).</p>
+
+<h3><strong>Updating Dependencies</strong></h3>
+<pre class="wysiwyg-code-block"><code>pip install --upgrade -r requirements.txt</code></pre>
+
+<p>The dependencies are all stable, well-maintained libraries. There are no pinned exact versions, so running the upgrade command will pull the latest compatible releases.</p>
+
+<h2 id="h_12FAILUREMODES"><strong>Common Failure Modes and Diagnostics</strong></h2>
+
+<h3><strong>Disk Space Exhaustion (PythonAnywhere)</strong></h3>
+<p>The most common failure in the hosted environment. The app cleans up temp files before each conversion via <code>cleanup_tmp_folders()</code>, and deletes the uploaded file before creating the output archive. If conversions still fail, manually clear <code>/tmp/uploads</code> and <code>/tmp/outputs</code> on the server.</p>
+
+<h3><strong>Malformed IMSCC Files</strong></h3>
+<p>If the IMSCC file is missing <code>imsmanifest.xml</code>, the parser raises a <code>ValueError</code>. If <code>module_meta.xml</code> is missing, the converter proceeds but produces an empty course. Corrupted ZIP files raise a <code>zipfile.BadZipFile</code> exception.</p>
+
+<h3><strong>XML Namespace Issues</strong></h3>
+<p>Canvas exports use the <code>http://canvas.instructure.com/xsd/cccv1p0</code> namespace, but not consistently. All parsers try namespace-qualified lookups first, then fall back to non-namespaced lookups. If a Canvas update changes the namespace URI, the parsers would need updating.</p>
+
+<h3><strong>Quiz Conversion Failures</strong></h3>
+<p>Individual question conversion failures are caught and logged without stopping the overall quiz conversion. The web interface reports the failure step and error detail in the JSON response. In verbose CLI mode, warnings are printed for each failed question.</p>
+
+<h3><strong>Chapter Generation Failures</strong></h3>
+<p>If a chapter fails to generate, the OLX generator creates a placeholder (staff-only) chapter XML file so that the Studio import does not break due to a missing referenced file.</p>
+
+<h3><strong>Gunicorn Timeout</strong></h3>
+<p>The Procfile sets a 300-second (5-minute) timeout for gunicorn. Very large courses may exceed this. For courses that take longer, use the CLI locally.</p>
+
+<h2 id="h_13RESTART"><strong>How to Restart / Redeploy</strong></h2>
+
+<h3><strong>PythonAnywhere</strong></h3>
+<ol>
+<li>Log in to <a href="https://www.pythonanywhere.com" target="_blank" rel="noopener noreferrer">PythonAnywhere</a>.</li>
+<li>Go to the Web tab.</li>
+<li>Click "Reload" next to the web app entry.</li>
+<li>Verify the app is running by visiting the health check endpoint: <code>https://kalebabebe.pythonanywhere.com/health</code> (should return <code>{"status": "healthy"}</code>).</li>
+</ol>
+
+<h3><strong>Local Development</strong></h3>
+<pre class="wysiwyg-code-block"><code>python app.py</code></pre>
+<p>This starts the Flask development server on <code>http://localhost:5000</code>.</p>
+
+<h2 id="h_14REPO"><strong>Code Repository and Contact</strong></h2>
+
+<p>Repository: <a href="https://github.com/kalebabebe/canvas-edx-course-converter" target="_blank" rel="noopener noreferrer">https://github.com/kalebabebe/canvas-edx-course-converter</a></p>
+
+<p>Branch: <code>main</code></p>
+
+<p>For questions, issues, or feature requests, contact <a href="mailto:mitx-support@mit.edu">mitx-support@mit.edu</a>.</p>

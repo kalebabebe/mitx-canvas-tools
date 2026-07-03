@@ -4,97 +4,112 @@ Simple upload/convert/download interface
 """
 
 import os
+import re
+import shutil
 import tarfile
 import tempfile
-import zipfile
+import time
+import uuid
 from pathlib import Path
-from flask import Flask, render_template, request, send_file, jsonify
-from werkzeug.utils import secure_filename
-import shutil
+from flask import Flask, render_template, request, send_from_directory, jsonify
 
 from src.converter import convert_canvas_to_openedx
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 200 * 1024 * 1024  # 200MB max file size
-app.config['UPLOAD_FOLDER'] = '/tmp/uploads'
-app.config['OUTPUT_FOLDER'] = '/tmp/outputs'
+app.config['OUTPUT_FOLDER'] = os.path.join(tempfile.gettempdir(), 'canvas_edx_outputs')
+app.config['JOB_TTL_SECONDS'] = 60 * 60  # downloads kept for 1 hour
 
-# Ensure directories exist
-os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs(app.config['OUTPUT_FOLDER'], exist_ok=True)
 
+JOB_ID_RE = re.compile(r'^[0-9a-f]{32}$')
 
-def cleanup_tmp_folders():
+
+def cleanup_expired_jobs():
     """
-    Clear old files from /tmp/uploads and /tmp/outputs to prevent
-    disk space exhaustion on PythonAnywhere or other constrained hosts.
-    Recreates the directories after clearing.
+    Remove job directories older than JOB_TTL_SECONDS. Unlike a blanket
+    wipe, this never touches jobs from concurrent/recent requests.
     """
-    for folder in [app.config['UPLOAD_FOLDER'], app.config['OUTPUT_FOLDER']]:
+    now = time.time()
+    root = app.config['OUTPUT_FOLDER']
+    try:
+        entries = os.listdir(root)
+    except OSError:
+        return
+    for name in entries:
+        path = os.path.join(root, name)
         try:
-            if os.path.exists(folder):
-                shutil.rmtree(folder)
-            os.makedirs(folder, exist_ok=True)
+            if now - os.path.getmtime(path) > app.config['JOB_TTL_SECONDS']:
+                shutil.rmtree(path, ignore_errors=True)
         except OSError as e:
-            app.logger.warning(f"Could not clean {folder}: {e}")
+            app.logger.warning(f"Could not clean {path}: {e}")
+
+
+@app.errorhandler(413)
+def request_entity_too_large(e):
+    """Friendly JSON response for oversized uploads"""
+    limit_mb = app.config['MAX_CONTENT_LENGTH'] // (1024 * 1024)
+    return jsonify({
+        'error': f'File too large. Maximum upload size is {limit_mb}MB.',
+        'type': 'RequestEntityTooLarge',
+    }), 413
+
 
 @app.route('/')
 def index():
     """Main page"""
     return render_template('index.html')
 
+
 @app.route('/convert', methods=['POST'])
 def convert():
     """Handle file upload and conversion"""
     if 'file' not in request.files:
         return jsonify({'error': 'No file uploaded'}), 400
-    
+
     file = request.files['file']
     if file.filename == '':
         return jsonify({'error': 'No file selected'}), 400
-    
+
     if not file.filename.endswith(('.imscc', '.zip')):
         return jsonify({'error': 'File must be .imscc or .zip'}), 400
-    
+
     report = None
     step = 'initializing'
 
+    # Per-request working directories: concurrent conversions never collide.
+    job_id = uuid.uuid4().hex
+    job_dir = os.path.join(app.config['OUTPUT_FOLDER'], job_id)
+    upload_dir = tempfile.mkdtemp(prefix='canvas_upload_')
+
     try:
-        # Clean up old files before starting to free disk space
+        # Reclaim disk from expired jobs (never touches in-flight ones)
         step = 'cleaning up old files'
-        cleanup_tmp_folders()
+        cleanup_expired_jobs()
 
-        # Save uploaded file
+        os.makedirs(job_dir, exist_ok=True)
+
+        # Save uploaded file (basename only; stored in our own temp dir)
         step = 'saving uploaded file'
-        filename = secure_filename(file.filename)
-        upload_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        filename = os.path.basename(file.filename) or 'course.imscc'
+        upload_path = os.path.join(upload_dir, filename)
         file.save(upload_path)
-
-        # Create output directory
-        output_name = Path(filename).stem + '_olx'
-        output_path = os.path.join(app.config['OUTPUT_FOLDER'], output_name)
-
-        # Remove old output if exists
-        if os.path.exists(output_path):
-            shutil.rmtree(output_path)
 
         # Convert
         step = 'converting course'
+        output_name = Path(filename).stem + '_olx'
+        output_path = os.path.join(job_dir, output_name)
         report = convert_canvas_to_openedx(upload_path, output_path, verbose=False)
 
-        # Free disk space BEFORE creating the tarball:
+        # Free disk space BEFORE creating the tarball
         step = 'creating download archive'
-        if os.path.exists(upload_path):
-            os.remove(upload_path)
-        # Force cleanup of the converter's temp extraction directory
-        import gc
-        gc.collect()
+        shutil.rmtree(upload_dir, ignore_errors=True)
 
         # Create tar.gz of output using streaming to keep memory low
-        zip_name = output_name + '.tar.gz'
-        zip_path = os.path.join(app.config['OUTPUT_FOLDER'], zip_name)
+        tar_name = output_name + '.tar.gz'
+        tar_path = os.path.join(job_dir, tar_name)
 
-        with tarfile.open(zip_path, 'w:gz', compresslevel=6) as tar:
+        with tarfile.open(tar_path, 'w:gz', compresslevel=6) as tar:
             for root, dirs, files in os.walk(output_path):
                 for f in files:
                     full_path = os.path.join(root, f)
@@ -107,11 +122,13 @@ def convert():
         return jsonify({
             'success': True,
             'report': report,
-            'download_url': f'/download/{zip_name}'
+            'download_url': f'/download/{job_id}/{tar_name}'
         })
 
     except Exception as e:
         import traceback
+        shutil.rmtree(job_dir, ignore_errors=True)
+
         error_detail = {
             'error': f'Conversion failed during: {step}',
             'detail': str(e),
@@ -125,23 +142,28 @@ def convert():
         app.logger.error(f"Conversion failed at step '{step}': {traceback.format_exc()}")
         return jsonify(error_detail), 500
 
-@app.route('/download/<filename>')
-def download(filename):
-    """Download converted file"""
-    file_path = os.path.join(app.config['OUTPUT_FOLDER'], filename)
-    if not os.path.exists(file_path):
-        return jsonify({'error': 'File not found'}), 404
-    
-    return send_file(
-        file_path,
-        as_attachment=True,
-        download_name=filename
-    )
+    finally:
+        shutil.rmtree(upload_dir, ignore_errors=True)
+
+
+@app.route('/download/<job_id>/<path:filename>')
+def download(job_id, filename):
+    """Download converted file (path-traversal safe via send_from_directory)"""
+    if not JOB_ID_RE.match(job_id):
+        return jsonify({'error': 'Invalid download link'}), 404
+
+    job_dir = os.path.join(app.config['OUTPUT_FOLDER'], job_id)
+    if not os.path.isdir(job_dir):
+        return jsonify({'error': 'File not found or link expired'}), 404
+
+    return send_from_directory(job_dir, filename, as_attachment=True)
+
 
 @app.route('/health')
 def health():
     """Health check endpoint"""
     return jsonify({'status': 'healthy'})
+
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
